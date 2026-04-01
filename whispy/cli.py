@@ -15,6 +15,7 @@ Commands:
 from __future__ import annotations
 
 import json
+import os
 import click
 from rich.console import Console
 from rich.table import Table
@@ -115,14 +116,16 @@ def collect(port, label, duration, total, sr, out, camera, detector, baud, pause
 @click.option("--mqtt-tls/--no-mqtt-tls", default=False, help="Enable TLS for cloud MQTT broker")
 @click.option("--latitude", default=0.0, type=float, help="Device GPS latitude")
 @click.option("--longitude", default=0.0, type=float, help="Device GPS longitude")
-@click.option("--backend-url", default=None, help="Central backend REST URL (e.g. http://api.example.com:8000)")
+@click.option("--backend-url", default=None, help="Central backend REST URL (e.g. https://whispy.up.railway.app)")
+@click.option("--api-key", default=None, help="API key for cloud backend auth")
 @click.option("--watchdog/--no-watchdog", default=False, help="Enable health checks + systemd heartbeat")
 @click.option("--gpio-pin", default=None, type=int, help="GPIO pin for ESP32 power-cycle relay")
 @click.option("--labels", default=None, help="Comma-separated class labels (e.g. empty,occupied)")
 def deploy(port, model, baud, sr, var_window, window_len,
            cache_gb, mqtt_broker, mqtt_port, mqtt_node, mqtt_location,
            mqtt_user, mqtt_password, mqtt_task, mqtt_tls,
-           latitude, longitude, backend_url, watchdog, gpio_pin, labels):
+           latitude, longitude, backend_url, api_key,
+           watchdog, gpio_pin, labels):
     """Run live inference on CSI stream with rolling cache.
 
     Reads CSI from serial, applies rolling variance + windowing,
@@ -131,11 +134,11 @@ def deploy(port, model, baud, sr, var_window, window_len,
 
     \b
     Local HA:     --mqtt-broker 192.168.1.100
-    Cloud:        --mqtt-broker mqtt.example.com --mqtt-port 8883 --mqtt-tls
+    Cloud REST:   --backend-url https://whispy.up.railway.app --api-key KEY
     Watchdog:     --watchdog --gpio-pin 17
-    Full global:  --mqtt-broker mqtt.example.com --mqtt-tls \\
-                  --backend-url http://api.example.com:8000 \\
-                  --latitude 43.65 --longitude -79.38
+    Full hybrid:  --mqtt-broker mqtt.example.com --mqtt-tls \\
+                  --backend-url https://whispy.up.railway.app \\
+                  --api-key KEY --latitude 43.65 --longitude -79.38
     """
     from whispy.collect import deploy as _deploy
     label_list = labels.split(",") if labels else None
@@ -148,7 +151,7 @@ def deploy(port, model, baud, sr, var_window, window_len,
         mqtt_user=mqtt_user, mqtt_password=mqtt_password,
         mqtt_task=mqtt_task, mqtt_tls=mqtt_tls,
         latitude=latitude, longitude=longitude,
-        backend_url=backend_url,
+        backend_url=backend_url, api_key=api_key,
         watchdog=watchdog, gpio_pin=gpio_pin, labels=label_list,
     )
 
@@ -442,26 +445,32 @@ def backend():
 
 @backend.command("start")
 @click.option("--host", default="0.0.0.0", help="Bind address")
-@click.option("--port", default=8000, help="HTTP port")
-@click.option("--broker", default="localhost", help="MQTT broker address")
+@click.option("--port", default=8000, help="HTTP port (Railway sets $PORT automatically)")
+@click.option("--api-key", default=None, help="API key for device auth (or set WHISPY_API_KEY env)")
+@click.option("--broker", default=None, help="MQTT broker address (optional, for hybrid mode)")
 @click.option("--broker-port", default=1883, help="MQTT broker port")
 @click.option("--broker-user", default=None, help="MQTT broker username")
 @click.option("--broker-password", default=None, help="MQTT broker password")
 @click.option("--data-dir", default="./whispy_backend_data", help="Data directory")
-def backend_start(host, port, broker, broker_port, broker_user, broker_password, data_dir):
-    """Start the central backend server (FastAPI + MQTT subscriber).
+def backend_start(host, port, api_key, broker, broker_port, broker_user, broker_password, data_dir):
+    """Start the central backend server (FastAPI + REST ingest).
 
     \b
-    Example:
-        whispy backend start --broker mqtt.example.com --port 8000
-        whispy backend start --broker localhost --broker-user whispy_backend
+    Local dev:    whispy backend start
+    With auth:    whispy backend start --api-key mysecretkey
+    Railway:      Set WHISPY_API_KEY env var, then `railway up`
+    Hybrid:       whispy backend start --api-key KEY --broker mqtt.example.com
     """
     from whispy.backend import run_server
+    auth_str = "enabled" if (api_key or os.environ.get("WHISPY_API_KEY")) else "disabled"
+    mqtt_str = f"{broker}:{broker_port}" if broker else "none (REST-only)"
     console.print(f"\n[bold cyan]🔮 Whispy Backend Server[/bold cyan]")
     console.print(f"  HTTP:  http://{host}:{port}")
-    console.print(f"  MQTT:  {broker}:{broker_port}")
+    console.print(f"  Auth:  {auth_str}")
+    console.print(f"  MQTT:  {mqtt_str}")
     console.print(f"  Docs:  http://{host}:{port}/docs\n")
-    run_server(host=host, port=port, broker=broker, broker_port=broker_port,
+    run_server(host=host, port=port, api_key=api_key,
+               broker=broker, broker_port=broker_port,
                broker_user=broker_user, broker_password=broker_password,
                data_dir=data_dir)
 

@@ -42,6 +42,7 @@ mqtt = ["paho-mqtt>=2.0"]
 watchdog = ["sd-notify>=0.1", "psutil>=5.9"]
 pi = ["gpiozero>=2.0"]
 backend = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.6"]
+test = ["pytest>=8.0", "httpx>=0.27"]
 all = [
     "pyserial>=3.5",
     "opencv-python>=4.8",
