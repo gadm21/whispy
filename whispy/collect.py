@@ -310,6 +310,10 @@ def deploy(
     mqtt_user: str | None = None,
     mqtt_password: str | None = None,
     mqtt_task: str = "occupancy",
+    mqtt_tls: bool = False,
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+    backend_url: str | None = None,
     # --- watchdog ---
     watchdog: bool = False,
     gpio_pin: int | None = None,
@@ -321,7 +325,8 @@ def deploy(
     ring buffer (default 1 GB).  Use ``export_cache()`` to dump data.
 
     If *mqtt_broker* is set, predictions and diagnostics are published
-    to MQTT with Home Assistant auto-discovery.
+    to MQTT with Home Assistant auto-discovery.  The device also
+    self-registers with the central backend (via MQTT and optionally REST).
 
     If *watchdog* is True, health checks run every ~15 s and a systemd
     heartbeat is sent (requires ``sd-notify``).
@@ -345,8 +350,11 @@ def deploy(
         mqtt = WhispyMQTT(
             broker=mqtt_broker, port=mqtt_port,
             node_id=mqtt_node, location=mqtt_location,
+            latitude=latitude, longitude=longitude,
             username=mqtt_user, password=mqtt_password,
+            tls=mqtt_tls,
             task=mqtt_task, labels=labels or [],
+            backend_url=backend_url,
         )
         if not mqtt.connect():
             print("[deploy] WARNING: MQTT connection failed — continuing without it")

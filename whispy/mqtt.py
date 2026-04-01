@@ -51,12 +51,15 @@ class WhispyMQTT:
     Parameters
     ----------
     broker : MQTT broker hostname or IP.
-    port : MQTT broker port (default 1883).
-    node_id : unique identifier for this Whispy node (e.g. "office").
+    port : MQTT broker port (default 1883, use 8883 for TLS).
+    node_id : unique identifier for this Whispy node (e.g. "lab-toronto-01").
     location : human-friendly location name (e.g. "Office").
+    latitude, longitude : GPS coordinates for the device.
     username, password : broker credentials (optional).
+    tls : enable TLS encryption (required for cloud brokers).
     task : sensing task — "occupancy", "har", or "localization".
     labels : class label names for the task (optional).
+    backend_url : REST API URL for the central backend (optional).
     """
 
     def __init__(
@@ -65,19 +68,27 @@ class WhispyMQTT:
         port: int = 1883,
         node_id: str = "office",
         location: str = "Office",
+        latitude: float = 0.0,
+        longitude: float = 0.0,
         username: str | None = None,
         password: str | None = None,
+        tls: bool = False,
         task: str = "occupancy",
         labels: list[str] | None = None,
+        backend_url: str | None = None,
     ):
         self.broker = broker
         self.port = port
         self.node_id = node_id
         self.location = location
+        self.latitude = latitude
+        self.longitude = longitude
         self.username = username
         self.password = password
+        self.tls = tls
         self.task = task
         self.labels = labels or []
+        self.backend_url = backend_url
         self._client: Any = None
         self._connected = False
 
@@ -98,6 +109,12 @@ class WhispyMQTT:
 
         if self.username:
             self._client.username_pw_set(self.username, self.password)
+
+        # TLS for cloud broker connections
+        if self.tls:
+            import ssl
+            self._client.tls_set(cert_reqs=ssl.CERT_REQUIRED,
+                                 tls_version=ssl.PROTOCOL_TLSv1_2)
 
         # LWT — broker publishes "offline" if we disconnect unexpectedly
         avail_topic = _topic(self.node_id, "availability")
@@ -126,6 +143,13 @@ class WhispyMQTT:
 
         # publish HA discovery configs
         self._publish_discovery()
+
+        # publish device info for backend registration
+        self._publish_device_info()
+
+        # also register via REST if backend_url is set
+        if self.backend_url:
+            self._register_rest()
 
         print(f"[mqtt] Connected to {self.broker}:{self.port}  node={self.node_id}")
         return True
@@ -280,6 +304,45 @@ class WhispyMQTT:
                         payload: dict) -> None:
         topic = _discovery_topic(component, self.node_id, object_id)
         self._client.publish(topic, json.dumps(payload), qos=1, retain=True)
+
+    # ── device registration ─────────────────────────────────
+    def _publish_device_info(self) -> None:
+        """Publish device info so the central backend can register this node."""
+        from whispy.device import DeviceInfo
+        dev = DeviceInfo.from_system(
+            node_id=self.node_id,
+            location=self.location,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            task=self.task,
+        )
+        dev.labels = self.labels
+        topic = _topic(self.node_id, "device", "info")
+        self._client.publish(topic, dev.to_json(), qos=1, retain=True)
+
+    def _register_rest(self) -> None:
+        """Register device with the central backend via REST API."""
+        try:
+            import urllib.request
+            from whispy.device import DeviceInfo
+            dev = DeviceInfo.from_system(
+                node_id=self.node_id,
+                location=self.location,
+                latitude=self.latitude,
+                longitude=self.longitude,
+                task=self.task,
+            )
+            dev.labels = self.labels
+            url = f"{self.backend_url.rstrip('/')}/devices/register"
+            data = dev.to_json().encode("utf-8")
+            req = urllib.request.Request(
+                url, data=data, method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                print(f"[mqtt] REST registration: {resp.read().decode()}")
+        except Exception as e:
+            print(f"[mqtt] REST registration failed (non-fatal): {e}")
 
     # ── state publishing ────────────────────────────────────
     def publish_prediction(

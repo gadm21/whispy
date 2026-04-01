@@ -12,6 +12,7 @@ pip install whispy[dl,fl]           # deep learning + federated
 pip install whispy[mqtt]            # Home Assistant MQTT integration
 pip install whispy[watchdog]        # system health + systemd
 pip install whispy[pi]              # Raspberry Pi GPIO (ESP32 reset relay)
+pip install whispy[backend]         # central server (FastAPI + SQLite)
 ```
 
 ## Quick Start
@@ -48,6 +49,33 @@ whispy watchdog status
 # Generate systemd service for auto-start on Pi
 whispy watchdog service --port /dev/ttyUSB0 --model model.pkl \
     --mqtt-broker localhost > /etc/systemd/system/whispy.service
+
+# ── Global Deployment (central server + remote nodes) ──
+
+# 1. Generate broker config with TLS + auth
+whispy backend init --domain mqtt.example.com
+
+# 2. Add credentials for a new device
+whispy backend add-device --node-id lab-toronto-01
+
+# 3. Start the central backend server
+whispy backend start --broker mqtt.example.com --port 8000
+
+# 4. On a remote Pi: deploy with cloud broker + auto-registration
+whispy deploy --port /dev/ttyUSB0 --model model.pkl \
+    --mqtt-broker mqtt.example.com --mqtt-port 8883 --mqtt-tls \
+    --mqtt-user lab-toronto-01 --mqtt-password <pw> \
+    --mqtt-node lab-toronto-01 --mqtt-location "Toronto Lab" \
+    --latitude 43.6532 --longitude -79.3832 \
+    --backend-url http://api.example.com:8000
+
+# 5. Discover ESP32 receivers on the current machine
+whispy device discover
+
+# 6. Register device via REST API
+whispy device register --node-id lab-toronto-01 \
+    --location Toronto --latitude 43.65 --longitude -79.38 \
+    --backend-url http://api.example.com:8000
 
 # Load a built-in dataset from HuggingFace
 whispy load OfficeLocalization --out ./data
@@ -101,7 +129,10 @@ whispy.vis.plot_results(results)
 - **`whispy.fl`** — Federated learning with Flower (FedAvg, FedProx, etc.)
 - **`whispy.core`** — CSI processing primitives (resampling, subcarrier mask, etc.)
 - **`whispy.watchdog`** — Rolling CSI cache (resizable, default 1 GB), health monitoring, systemd integration, data export
-- **`whispy.mqtt`** — MQTT publisher with Home Assistant auto-discovery, connection testing
+- **`whispy.mqtt`** — MQTT publisher with Home Assistant auto-discovery, TLS, connection testing
+- **`whispy.device`** — Device registry, receiver auto-discovery, GPS location, hardware attributes
+- **`whispy.backend`** — Central FastAPI server: device registry, MQTT subscriber, data upload, FL coordination
+- **`whispy.broker`** — Mosquitto config generator with TLS, authentication, ACLs for cloud deployment
 
 ## Extensions & Future Directions
 

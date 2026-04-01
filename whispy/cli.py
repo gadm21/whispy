@@ -14,6 +14,7 @@ Commands:
 
 from __future__ import annotations
 
+import json
 import click
 from rich.console import Console
 from rich.table import Table
@@ -111,12 +112,17 @@ def collect(port, label, duration, total, sr, out, camera, detector, baud, pause
 @click.option("--mqtt-user", default=None, help="MQTT username")
 @click.option("--mqtt-password", default=None, help="MQTT password")
 @click.option("--mqtt-task", default="occupancy", type=click.Choice(["occupancy", "har", "localization"]))
+@click.option("--mqtt-tls/--no-mqtt-tls", default=False, help="Enable TLS for cloud MQTT broker")
+@click.option("--latitude", default=0.0, type=float, help="Device GPS latitude")
+@click.option("--longitude", default=0.0, type=float, help="Device GPS longitude")
+@click.option("--backend-url", default=None, help="Central backend REST URL (e.g. http://api.example.com:8000)")
 @click.option("--watchdog/--no-watchdog", default=False, help="Enable health checks + systemd heartbeat")
 @click.option("--gpio-pin", default=None, type=int, help="GPIO pin for ESP32 power-cycle relay")
 @click.option("--labels", default=None, help="Comma-separated class labels (e.g. empty,occupied)")
 def deploy(port, model, baud, sr, var_window, window_len,
            cache_gb, mqtt_broker, mqtt_port, mqtt_node, mqtt_location,
-           mqtt_user, mqtt_password, mqtt_task, watchdog, gpio_pin, labels):
+           mqtt_user, mqtt_password, mqtt_task, mqtt_tls,
+           latitude, longitude, backend_url, watchdog, gpio_pin, labels):
     """Run live inference on CSI stream with rolling cache.
 
     Reads CSI from serial, applies rolling variance + windowing,
@@ -124,9 +130,12 @@ def deploy(port, model, baud, sr, var_window, window_len,
     All raw CSI packets are stored in a resizable ring buffer (--cache-gb).
 
     \b
-    Home Assistant:  --mqtt-broker 192.168.1.100
-    Watchdog:        --watchdog --gpio-pin 17
-    Export cache:    whispy export --minutes 5
+    Local HA:     --mqtt-broker 192.168.1.100
+    Cloud:        --mqtt-broker mqtt.example.com --mqtt-port 8883 --mqtt-tls
+    Watchdog:     --watchdog --gpio-pin 17
+    Full global:  --mqtt-broker mqtt.example.com --mqtt-tls \\
+                  --backend-url http://api.example.com:8000 \\
+                  --latitude 43.65 --longitude -79.38
     """
     from whispy.collect import deploy as _deploy
     label_list = labels.split(",") if labels else None
@@ -137,7 +146,9 @@ def deploy(port, model, baud, sr, var_window, window_len,
         mqtt_broker=mqtt_broker, mqtt_port=mqtt_port,
         mqtt_node=mqtt_node, mqtt_location=mqtt_location,
         mqtt_user=mqtt_user, mqtt_password=mqtt_password,
-        mqtt_task=mqtt_task,
+        mqtt_task=mqtt_task, mqtt_tls=mqtt_tls,
+        latitude=latitude, longitude=longitude,
+        backend_url=backend_url,
         watchdog=watchdog, gpio_pin=gpio_pin, labels=label_list,
     )
 
@@ -418,6 +429,148 @@ def watchdog_service(port, model, mqtt_broker, mqtt_node, gpio_pin, venv):
         gpio_pin=gpio_pin, venv_python=venv,
     )
     click.echo(content)
+
+
+# =========================================================================
+# backend
+# =========================================================================
+@main.group()
+def backend():
+    """Central backend server for global Whispy deployments."""
+    pass
+
+
+@backend.command("start")
+@click.option("--host", default="0.0.0.0", help="Bind address")
+@click.option("--port", default=8000, help="HTTP port")
+@click.option("--broker", default="localhost", help="MQTT broker address")
+@click.option("--broker-port", default=1883, help="MQTT broker port")
+@click.option("--broker-user", default=None, help="MQTT broker username")
+@click.option("--broker-password", default=None, help="MQTT broker password")
+@click.option("--data-dir", default="./whispy_backend_data", help="Data directory")
+def backend_start(host, port, broker, broker_port, broker_user, broker_password, data_dir):
+    """Start the central backend server (FastAPI + MQTT subscriber).
+
+    \b
+    Example:
+        whispy backend start --broker mqtt.example.com --port 8000
+        whispy backend start --broker localhost --broker-user whispy_backend
+    """
+    from whispy.backend import run_server
+    console.print(f"\n[bold cyan]🔮 Whispy Backend Server[/bold cyan]")
+    console.print(f"  HTTP:  http://{host}:{port}")
+    console.print(f"  MQTT:  {broker}:{broker_port}")
+    console.print(f"  Docs:  http://{host}:{port}/docs\n")
+    run_server(host=host, port=port, broker=broker, broker_port=broker_port,
+               broker_user=broker_user, broker_password=broker_password,
+               data_dir=data_dir)
+
+
+@backend.command("init")
+@click.option("--domain", required=True, help="Broker domain for TLS certificate")
+@click.option("--out", default="./whispy_broker", help="Output directory for config files")
+def backend_init(domain, out):
+    """Generate Mosquitto broker config with TLS, auth, and ACLs.
+
+    \b
+    Example:
+        whispy backend init --domain mqtt.example.com
+    """
+    from whispy.broker import generate_broker_config
+    console.print(f"\n[bold cyan]🔮 Whispy Broker Config Generator[/bold cyan]\n")
+    result = generate_broker_config(config_dir=out, domain=domain)
+    console.print(f"\n[green]✓[/green] Config written to {out}/")
+    console.print(f"  Backend password: [bold]{result['backend_password']}[/bold]")
+    console.print(f"  See {out}/TLS_SETUP.md for certificate instructions\n")
+
+
+@backend.command("add-device")
+@click.option("--node-id", required=True, help="Device node ID")
+@click.option("--config-dir", default="./whispy_broker", help="Broker config directory")
+def backend_add_device(node_id, config_dir):
+    """Add MQTT credentials for a new device.
+
+    \b
+    Example:
+        whispy backend add-device --node-id lab-toronto-01
+    """
+    from whispy.broker import add_device_credentials
+    console.print(f"\n[bold cyan]🔮 Add Device Credentials[/bold cyan]\n")
+    result = add_device_credentials(config_dir=config_dir, node_id=node_id)
+    console.print(f"  Node ID:  {result['node_id']}")
+    console.print(f"  Username: {result['username']}")
+    console.print(f"  Password: [bold]{result['password']}[/bold]")
+    console.print(f"\n  Remember to re-hash and restart Mosquitto!\n")
+
+
+# =========================================================================
+# device
+# =========================================================================
+@main.group()
+def device():
+    """Device management commands."""
+    pass
+
+
+@device.command("info")
+def device_info_cmd():
+    """Show info about the current device (hostname, CPU, receivers)."""
+    from whispy.device import DeviceInfo
+    dev = DeviceInfo.from_system(node_id="this-device")
+    console.print(f"\n[bold cyan]🔮 This Device[/bold cyan]\n")
+    console.print(dev.summary())
+    console.print()
+
+
+@device.command("discover")
+def device_discover():
+    """Auto-discover ESP32 receivers on USB-serial ports."""
+    from whispy.device import discover_receivers
+    console.print(f"\n[bold cyan]🔮 Receiver Discovery[/bold cyan]\n")
+    receivers = discover_receivers()
+    if not receivers:
+        console.print("  No ESP32 receivers found on USB-serial ports.")
+        console.print("  Make sure pyserial is installed: pip install whispy[collect]")
+    else:
+        for r in receivers:
+            console.print(f"  ● {r.port}  {r.chip}  baud={r.baud}")
+    console.print()
+
+
+@device.command("register")
+@click.option("--node-id", required=True, help="Globally unique node ID")
+@click.option("--location", default="", help="Location name")
+@click.option("--latitude", default=0.0, type=float)
+@click.option("--longitude", default=0.0, type=float)
+@click.option("--backend-url", required=True, help="Backend REST URL")
+@click.option("--task", default="occupancy", type=click.Choice(["occupancy", "har", "localization"]))
+def device_register(node_id, location, latitude, longitude, backend_url, task):
+    """Register this device with the central backend via REST.
+
+    \b
+    Example:
+        whispy device register --node-id lab-toronto-01 \\
+            --location Toronto --latitude 43.65 --longitude -79.38 \\
+            --backend-url http://api.example.com:8000
+    """
+    from whispy.device import DeviceInfo
+    import urllib.request
+
+    dev = DeviceInfo.from_system(
+        node_id=node_id, location=location,
+        latitude=latitude, longitude=longitude, task=task,
+    )
+    url = f"{backend_url.rstrip('/')}/devices/register"
+    data = dev.to_json().encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode())
+            console.print(f"\n[green]✓[/green] Registered: {result}")
+    except Exception as e:
+        console.print(f"\n[red]✗[/red] Registration failed: {e}")
+    console.print()
 
 
 if __name__ == "__main__":
