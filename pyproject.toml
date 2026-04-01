@@ -38,6 +38,9 @@ dl = ["torch>=2.0", "xgboost>=2.0"]
 fl = ["flwr>=1.7"]
 hf = ["huggingface_hub>=0.20"]
 vis = ["matplotlib>=3.7"]
+mqtt = ["paho-mqtt>=2.0"]
+watchdog = ["sd-notify>=0.1", "psutil>=5.9"]
+pi = ["gpiozero>=2.0"]
 all = [
     "pyserial>=3.5",
     "opencv-python>=4.8",
@@ -46,14 +49,17 @@ all = [
     "flwr>=1.7",
     "huggingface_hub>=0.20",
     "matplotlib>=3.7",
+    "paho-mqtt>=2.0",
+    "sd-notify>=0.1",
+    "psutil>=5.9",
 ]
 
 [project.scripts]
 whispy = "whispy.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/gadgadgad/whispy"
-Documentation = "https://github.com/gadgadgad/whispy#readme"
+Homepage = "https://github.com/gadm21/whispy"
+Documentation = "https://github.com/gadm21/whispy#readme"
 
 [tool.setuptools.packages.find]
 include = ["whispy*"]

@@ -300,14 +300,68 @@ def deploy(
     sr: int = DEFAULT_SR,
     var_window: int = 20,
     window_len: int = 500,
+    # --- rolling cache ---
+    cache_gb: float = 1.0,
+    # --- MQTT / Home Assistant ---
+    mqtt_broker: str | None = None,
+    mqtt_port: int = 1883,
+    mqtt_node: str = "office",
+    mqtt_location: str = "Office",
+    mqtt_user: str | None = None,
+    mqtt_password: str | None = None,
+    mqtt_task: str = "occupancy",
+    # --- watchdog ---
+    watchdog: bool = False,
+    gpio_pin: int | None = None,
+    labels: list[str] | None = None,
 ) -> None:
-    """Run live inference on CSI stream. Prints predictions to terminal."""
+    """Run live inference on CSI stream with rolling cache, MQTT, and watchdog.
+
+    The rolling cache continuously stores raw CSI packets in a fixed-size
+    ring buffer (default 1 GB).  Use ``export_cache()`` to dump data.
+
+    If *mqtt_broker* is set, predictions and diagnostics are published
+    to MQTT with Home Assistant auto-discovery.
+
+    If *watchdog* is True, health checks run every ~15 s and a systemd
+    heartbeat is sent (requires ``sd-notify``).
+    """
     import pickle
 
     with open(model_path, "rb") as f:
         model = pickle.load(f)
 
     print(f"[deploy] Model loaded from {model_path}")
+
+    # ── rolling cache ───────────────────────────────────────
+    from whispy.watchdog import RollingCache
+    cache = RollingCache(max_bytes=int(cache_gb * 1024**3))
+    print(f"[deploy] Rolling cache: {cache}")
+
+    # ── MQTT ────────────────────────────────────────────────
+    mqtt = None
+    if mqtt_broker:
+        from whispy.mqtt import WhispyMQTT
+        mqtt = WhispyMQTT(
+            broker=mqtt_broker, port=mqtt_port,
+            node_id=mqtt_node, location=mqtt_location,
+            username=mqtt_user, password=mqtt_password,
+            task=mqtt_task, labels=labels or [],
+        )
+        if not mqtt.connect():
+            print("[deploy] WARNING: MQTT connection failed — continuing without it")
+            mqtt = None
+
+    # ── watchdog / health monitor ───────────────────────────
+    health = None
+    if watchdog:
+        from whispy.watchdog import HealthMonitor, WatchdogConfig
+        cfg = WatchdogConfig(gpio_reset_pin=gpio_pin)
+        health = HealthMonitor(cfg)
+        health.report_ready()
+        health.report_status("Model loaded, listening for CSI")
+        print("[deploy] Watchdog active (systemd heartbeat + health checks)")
+
     print(f"[deploy] Listening on {port} @ {baud} — Ctrl+C to stop")
 
     _stop.clear()
@@ -318,34 +372,91 @@ def deploy(
     t.start()
 
     last_count = 0
-    while not _stop.is_set():
-        time.sleep(window_len / sr)  # wait one window's worth
-        arrays = buf.to_arrays()
-        n = len(arrays["timestamp"])
-        if n < window_len + var_window:
-            continue
-        if n == last_count:
-            continue
-        last_count = n
+    last_health_time = time.time()
+    last_rate_count = 0
+    last_rate_time = time.time()
 
-        # Process latest window
-        real, imag = arrays["real"], arrays["imag"]
-        mag = np.sqrt(real**2 + imag**2)
-        mag = mag[:, CSI_SUBCARRIER_MASK]  # (N, 52)
-        rv = rolling_variance(mag, var_window)
-        # take last window
-        chunk = rv[-window_len:]
-        if chunk.shape[0] < window_len:
-            continue
-        x = chunk.reshape(1, -1)
-        pred = model.predict(x)[0]
-        prob = model.predict_proba(x)[0] if hasattr(model, "predict_proba") else None
-        conf = f"  conf={prob.max():.2f}" if prob is not None else ""
-        print(f"  [pred] class={pred}{conf}  (n={n})")
-        buf.set_model_pred(float(prob.max()) if prob is not None else float(pred))
+    try:
+        while not _stop.is_set():
+            time.sleep(window_len / sr)  # wait one window's worth
+            arrays = buf.to_arrays()
+            n = len(arrays["timestamp"])
+            if n < window_len + var_window:
+                continue
+            if n == last_count:
+                continue
 
-    _stop.set()
-    print("\n[deploy] Stopped.")
+            # ── feed rolling cache with new packets ─────────
+            new_start = last_count if last_count < n else 0
+            for i in range(new_start, n):
+                cache.push(
+                    int(arrays["timestamp"][i]),
+                    float(arrays["rssi"][i]),
+                    arrays["real"][i],
+                    arrays["imag"][i],
+                )
+
+            last_count = n
+
+            # ── process latest window ───────────────────────
+            real, imag = arrays["real"], arrays["imag"]
+            mag = np.sqrt(real**2 + imag**2)
+            mag = mag[:, CSI_SUBCARRIER_MASK]  # (N, 52)
+            rv = rolling_variance(mag, var_window)
+            chunk = rv[-window_len:]
+            if chunk.shape[0] < window_len:
+                continue
+            x = chunk.reshape(1, -1)
+            pred = model.predict(x)[0]
+            prob = model.predict_proba(x)[0] if hasattr(model, "predict_proba") else None
+            conf_val = float(prob.max()) if prob is not None else 0.0
+            conf = f"  conf={conf_val:.2f}" if prob is not None else ""
+            print(f"  [pred] class={pred}{conf}  (n={n})  cache={cache.size}")
+            buf.set_model_pred(conf_val if prob is not None else float(pred))
+
+            # ── MQTT publish ────────────────────────────────
+            if mqtt:
+                label_str = None
+                all_probs = None
+                if labels and prob is not None:
+                    label_str = labels[int(pred)] if int(pred) < len(labels) else str(pred)
+                    all_probs = {labels[i]: float(prob[i]) for i in range(min(len(labels), len(prob)))}
+                mqtt.publish_prediction(
+                    pred=int(pred), confidence=conf_val,
+                    label=label_str, all_probs=all_probs,
+                )
+
+            # ── health check + MQTT diagnostics (every ~15s) ──
+            now = time.time()
+            if now - last_health_time > 15:
+                dt = now - last_rate_time
+                csi_rate = (n - last_rate_count) / dt if dt > 0 else 0
+                last_rate_count = n
+                last_rate_time = now
+                last_health_time = now
+
+                cpu_temp = None
+                if health:
+                    results = health.tick(csi_rate=csi_rate)
+                    # extract cpu temp from results
+                    for r in results:
+                        if r.check == "cpu_temp" and r.value > 0:
+                            cpu_temp = r.value
+                            break
+
+                if mqtt:
+                    mqtt.publish_diagnostics(
+                        csi_rate=csi_rate,
+                        cpu_temp=cpu_temp,
+                        esp32_alive=csi_rate > 0,
+                        cache_mb=cache.used_bytes / 1024**2,
+                    )
+
+    finally:
+        _stop.set()
+        if mqtt:
+            mqtt.disconnect()
+        print(f"\n[deploy] Stopped.  Cache: {cache}")
 
 
 # =========================================================================

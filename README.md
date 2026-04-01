@@ -9,6 +9,9 @@ pip install whispy                  # core only
 pip install whispy[all]             # everything
 pip install whispy[collect,camera]  # collection + face detection
 pip install whispy[dl,fl]           # deep learning + federated
+pip install whispy[mqtt]            # Home Assistant MQTT integration
+pip install whispy[watchdog]        # system health + systemd
+pip install whispy[pi]              # Raspberry Pi GPIO (ESP32 reset relay)
 ```
 
 ## Quick Start
@@ -20,8 +23,31 @@ whispy collect --port COM5 --label myroom --duration 300
 # Collect with face detection (auto occupancy labels)
 whispy collect --port COM5 --label indoor --camera
 
-# Deploy a trained model (inference only, no file saved)
+# Deploy with 1 GB rolling cache (default)
 whispy deploy --port COM5 --model ./model.pkl
+
+# Deploy with Home Assistant integration
+whispy deploy --port /dev/ttyUSB0 --model model.pkl \
+    --mqtt-broker 192.168.1.100 --mqtt-node office --mqtt-location "Office" \
+    --labels empty,occupied --cache-gb 1.0
+
+# Deploy with watchdog + GPIO ESP32 reset
+whispy deploy --port /dev/ttyUSB0 --model model.pkl \
+    --watchdog --gpio-pin 17 --mqtt-broker localhost
+
+# Test Home Assistant MQTT connection
+whispy mqtt test --broker 192.168.1.100 --node office
+
+# Export last 5 minutes from the rolling cache (Python API)
+# from whispy.watchdog import export_cache
+# export_cache(cache, minutes=5, n_files=5, out_dir="./data")
+
+# Check system health
+whispy watchdog status
+
+# Generate systemd service for auto-start on Pi
+whispy watchdog service --port /dev/ttyUSB0 --model model.pkl \
+    --mqtt-broker localhost > /etc/systemd/system/whispy.service
 
 # Load a built-in dataset from HuggingFace
 whispy load OfficeLocalization --out ./data
@@ -74,6 +100,8 @@ whispy.vis.plot_results(results)
 - **`whispy.vis`** — Matplotlib visualization for results and live data
 - **`whispy.fl`** — Federated learning with Flower (FedAvg, FedProx, etc.)
 - **`whispy.core`** — CSI processing primitives (resampling, subcarrier mask, etc.)
+- **`whispy.watchdog`** — Rolling CSI cache (resizable, default 1 GB), health monitoring, systemd integration, data export
+- **`whispy.mqtt`** — MQTT publisher with Home Assistant auto-discovery, connection testing
 
 ## Extensions & Future Directions
 

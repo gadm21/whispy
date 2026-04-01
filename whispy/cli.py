@@ -103,15 +103,43 @@ def collect(port, label, duration, total, sr, out, camera, detector, baud, pause
 @click.option("--sr", default=150)
 @click.option("--var-window", default=20, help="Rolling variance window")
 @click.option("--window-len", default=500, help="Classification window length")
-def deploy(port, model, baud, sr, var_window, window_len):
-    """Run live inference on CSI stream (no file saved).
+@click.option("--cache-gb", default=1.0, help="Rolling CSI cache size in GB (default 1.0)")
+@click.option("--mqtt-broker", default=None, help="MQTT broker address for Home Assistant")
+@click.option("--mqtt-port", default=1883, help="MQTT broker port")
+@click.option("--mqtt-node", default="office", help="Unique node ID for MQTT topics")
+@click.option("--mqtt-location", default="Office", help="Human-friendly location name")
+@click.option("--mqtt-user", default=None, help="MQTT username")
+@click.option("--mqtt-password", default=None, help="MQTT password")
+@click.option("--mqtt-task", default="occupancy", type=click.Choice(["occupancy", "har", "localization"]))
+@click.option("--watchdog/--no-watchdog", default=False, help="Enable health checks + systemd heartbeat")
+@click.option("--gpio-pin", default=None, type=int, help="GPIO pin for ESP32 power-cycle relay")
+@click.option("--labels", default=None, help="Comma-separated class labels (e.g. empty,occupied)")
+def deploy(port, model, baud, sr, var_window, window_len,
+           cache_gb, mqtt_broker, mqtt_port, mqtt_node, mqtt_location,
+           mqtt_user, mqtt_password, mqtt_task, watchdog, gpio_pin, labels):
+    """Run live inference on CSI stream with rolling cache.
 
     Reads CSI from serial, applies rolling variance + windowing,
     and prints model predictions to terminal in real time.
+    All raw CSI packets are stored in a resizable ring buffer (--cache-gb).
+
+    \b
+    Home Assistant:  --mqtt-broker 192.168.1.100
+    Watchdog:        --watchdog --gpio-pin 17
+    Export cache:    whispy export --minutes 5
     """
     from whispy.collect import deploy as _deploy
-    _deploy(port=port, model_path=model, baud=baud, sr=sr,
-            var_window=var_window, window_len=window_len)
+    label_list = labels.split(",") if labels else None
+    _deploy(
+        port=port, model_path=model, baud=baud, sr=sr,
+        var_window=var_window, window_len=window_len,
+        cache_gb=cache_gb,
+        mqtt_broker=mqtt_broker, mqtt_port=mqtt_port,
+        mqtt_node=mqtt_node, mqtt_location=mqtt_location,
+        mqtt_user=mqtt_user, mqtt_password=mqtt_password,
+        mqtt_task=mqtt_task,
+        watchdog=watchdog, gpio_pin=gpio_pin, labels=label_list,
+    )
 
 
 # =========================================================================
@@ -276,6 +304,120 @@ def fl(data, strategy, clients, rounds, partition, alpha, model, pipeline, sr, s
     console.print(f"  Final Acc: {result.final_accuracy:.4f}")
     if result.round_accuracies:
         console.print(f"  Per-round: {[f'{a:.3f}' for a in result.round_accuracies]}")
+
+
+# =========================================================================
+# mqtt
+# =========================================================================
+@main.group()
+def mqtt():
+    """MQTT / Home Assistant integration commands."""
+    pass
+
+
+@mqtt.command("test")
+@click.option("--broker", required=True, help="MQTT broker address")
+@click.option("--port", default=1883, help="MQTT broker port")
+@click.option("--node", default="test", help="Node ID for test")
+@click.option("--location", default="Test Room", help="Location name")
+@click.option("--username", default=None, help="MQTT username")
+@click.option("--password", default=None, help="MQTT password")
+def mqtt_test(broker, port, node, location, username, password):
+    """Test MQTT connection and Home Assistant auto-discovery.
+
+    Connects to the broker, publishes discovery configs, sends test
+    predictions and diagnostics, then verifies everything works.
+
+    \b
+    Example:
+        whispy mqtt test --broker 192.168.1.100
+        whispy mqtt test --broker localhost --node office
+    """
+    from whispy.mqtt import test_connection
+
+    console.print(f"\n[bold cyan]🔮 Whispy MQTT / Home Assistant Test[/bold cyan]")
+    console.print(f"  Broker: {broker}:{port}  Node: {node}\n")
+
+    ok = test_connection(
+        broker=broker, port=port, node_id=node,
+        location=location, username=username, password=password,
+        verbose=True,
+    )
+    if ok:
+        console.print("[bold green]✓ All checks passed![/bold green]")
+    else:
+        console.print("[bold red]✗ Some checks failed — see above[/bold red]")
+
+
+# =========================================================================
+# export
+# =========================================================================
+@main.command("export")
+@click.option("--minutes", default=None, type=float, help="Minutes of data to export (default: all)")
+@click.option("--files", default=1, help="Split export into N files")
+@click.option("--out", default="./whispy_export", help="Output directory")
+@click.option("--label", default="export", help="Filename label prefix")
+@click.option("--sr", default=150, help="Sampling rate")
+def export_cmd(minutes, files, out, label, sr):
+    """Export data from the rolling cache to .npz files.
+
+    The cache is maintained by a running 'whispy deploy' process.
+    This command reads the cache and saves the requested amount of data.
+
+    \b
+    Examples:
+        whispy export --minutes 5 --files 5 --out ./data
+        whispy export --minutes 1 --label kitchen
+    """
+    console.print("[yellow]Note: export requires a running deploy process "
+                  "sharing the cache. For standalone export, use the Python API:[/yellow]")
+    console.print("  from whispy.watchdog import RollingCache, export_cache")
+    console.print("  export_cache(cache, minutes=5, n_files=5)")
+
+
+# =========================================================================
+# watchdog
+# =========================================================================
+@main.group()
+def watchdog():
+    """Watchdog & system health commands."""
+    pass
+
+
+@watchdog.command("status")
+def watchdog_status():
+    """Show current system health status."""
+    from whispy.watchdog import HealthMonitor, WatchdogConfig
+
+    console.print(f"\n[bold cyan]🔮 Whispy System Health[/bold cyan]\n")
+    monitor = HealthMonitor(WatchdogConfig())
+    console.print(monitor.summary())
+    console.print()
+
+
+@watchdog.command("service")
+@click.option("--port", required=True, help="Serial port of ESP32")
+@click.option("--model", required=True, help="Path to trained model (.pkl)")
+@click.option("--mqtt-broker", default=None, help="MQTT broker address")
+@click.option("--mqtt-node", default="office", help="MQTT node ID")
+@click.option("--gpio-pin", default=None, type=int, help="GPIO pin for ESP32 reset relay")
+@click.option("--venv", default=None, help="Path to venv python binary")
+def watchdog_service(port, model, mqtt_broker, mqtt_node, gpio_pin, venv):
+    """Generate a systemd service file for auto-start on boot.
+
+    \b
+    Example:
+        whispy watchdog service --port /dev/ttyUSB0 --model model.pkl \\
+            --mqtt-broker localhost > /etc/systemd/system/whispy.service
+    """
+    from whispy.watchdog import generate_service_file
+
+    content = generate_service_file(
+        port=port, model_path=model,
+        mqtt_broker=mqtt_broker, mqtt_node=mqtt_node,
+        gpio_pin=gpio_pin, venv_python=venv,
+    )
+    click.echo(content)
 
 
 if __name__ == "__main__":
