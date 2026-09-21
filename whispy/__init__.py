@@ -15,6 +15,16 @@ from whispy.core import (
     window_array,
 )
 from whispy.pipeline import Pipeline, Resample, RollingVariance, Window, Flatten
+from whispy.remote import (
+    Client,
+    Device,
+    Minute,
+    SensorData,
+    ThothError,
+    AuthError,
+    NotFoundError,
+    APIError,
+)
 
 __all__ = [
     "CSI_SUBCARRIER_MASK",
@@ -29,4 +39,12 @@ __all__ = [
     "RollingVariance",
     "Window",
     "Flatten",
+    "Client",
+    "Device",
+    "Minute",
+    "SensorData",
+    "ThothError",
+    "AuthError",
+    "NotFoundError",
+    "APIError",
 ]
