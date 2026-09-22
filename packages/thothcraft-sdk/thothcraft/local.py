@@ -103,6 +103,18 @@ class LocalDevice:
     def live_session(self, action: str = "start") -> Dict[str, Any]:
         return self._http.post_json("/api/live/session", {"action": action})
 
+    def predict(self, label: str, confidence: float = 1.0, *,
+                model_name: str = "SDK injection") -> Dict[str, Any]:
+        """Inject a prediction on the node — drives linked actuators.
+
+        ``node.predict("occupied")`` publishes the occupancy entity and turns
+        the configured Home Assistant light on; ``"empty"`` turns it off."""
+        return self._http.post_json("/api/internal/prediction", {
+            "class": label,
+            "confidence": confidence,
+            "model_name": model_name,
+        })
+
     def __repr__(self) -> str:
         return f"LocalDevice({self.host})"
 

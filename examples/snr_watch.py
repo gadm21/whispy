@@ -68,11 +68,17 @@ def main() -> int:
 
 
 def watch_local(args) -> int:
-    """Poll the node's own dashboard — no Brain account needed."""
+    """Poll the node's own dashboard — no Brain account needed.
+
+    On each threshold crossing the script injects a prediction on the node
+    (``occupied`` above the threshold, ``empty`` below) which drives the
+    device's linked Home Assistant actuator — e.g. the configured light.
+    """
     import time
     node = thothcraft.local(args.local, timeout=10)
     print(f"watching {args.local} for radar SNR > {args.threshold} dB "
           f"(Ctrl+C to stop)")
+    occupied = None  # edge-trigger: only predict on crossings
     try:
         while True:
             try:
@@ -83,11 +89,19 @@ def watch_local(args) -> int:
                 continue
             value = snr["snr_db"]
             if value is None:
-                print(f"no frames yet (stale={snr['stale']})", end="\r")
+                print(f"no frames yet (stale={snr['stale']})   ", end="\r")
             else:
-                flag = (f" > {args.threshold} — THRESHOLD EXCEEDED"
-                        if value > args.threshold else "")
-                print(f"SNR {value:.2f} dB{flag}          ")
+                now_occupied = value > args.threshold
+                flag = f" > {args.threshold}" if now_occupied else ""
+                print(f"SNR {value:.2f} dB{flag} (detected={snr['detected']})   ")
+                if now_occupied != occupied:
+                    occupied = now_occupied
+                    label = "occupied" if occupied else "empty"
+                    try:
+                        result = node.predict(label, confidence=min(1.0, value / 10.0))
+                        print(f"  -> predicted '{label}': {result.get('ha', result)}")
+                    except Exception as exc:
+                        print(f"  -> predict('{label}') failed: {exc}")
             time.sleep(args.poll)
     except KeyboardInterrupt:
         print("\nstopped")
