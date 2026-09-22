@@ -14,6 +14,8 @@ concepts as Brain — sensors, captures, models — without cloud auth.
 from __future__ import annotations
 
 import json
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional
@@ -49,6 +51,22 @@ class _LocalHttp:
                 return json.loads(res.read().decode("utf-8"))
         except Exception as exc:
             raise APIError(f"local request failed: {path}: {exc}") from exc
+
+    def get_bytes(self, path: str, params: Optional[dict] = None) -> bytes:
+        url = self.base_url + path
+        if params:
+            qs = urllib.parse.urlencode(
+                {k: v for k, v in params.items() if v is not None})
+            if qs:
+                url += "?" + qs
+        try:
+            with urllib.request.urlopen(url, timeout=self.timeout) as res:
+                return res.read()
+        except urllib.error.HTTPError as exc:
+            raise APIError(f"local request failed: {url}: HTTP {exc.code}",
+                           status_code=exc.code) from exc
+        except Exception as exc:
+            raise APIError(f"local request failed: {url}: {exc}") from exc
 
 
 class LocalDevice:
@@ -108,6 +126,85 @@ class LocalDevice:
             "age_seconds": state.get("age_seconds"),
         }
 
+    # -- live sensor streams --------------------------------------------------
+    def csi_tail(self, cursor: str = "") -> Dict[str, Any]:
+        """Incremental WiFi CSI feed.
+
+        Pass back ``response['cursor']`` on the next call to receive only new
+        samples. Samples are ``[monotonic_ns, rx_index, amplitude]`` at the
+        receiver's native rate (~100 Hz)."""
+        return self._http.get_json("/api/captures/live/csi/tail",
+                                   {"cursor": cursor})
+
+    def csi_stream(self, poll_s: float = 0.06,
+                   max_batches: Optional[int] = None) -> Iterator[List[list]]:
+        """Yield batches of CSI samples as they arrive."""
+        cursor = ""
+        batches = 0
+        while max_batches is None or batches < max_batches:
+            body = self.csi_tail(cursor)
+            cursor = body.get("cursor") or cursor
+            samples = body.get("samples") or []
+            if samples:
+                batches += 1
+                yield samples
+            else:
+                time.sleep(poll_s)
+
+    def sensehat(self) -> Dict[str, Any]:
+        """Latest Sense HAT reading plus a trailing series.
+
+        ``latest`` carries temperature_c, humidity_percent, pressure_mbar and
+        the IMU vectors (acceleration/gyroscope/compass)."""
+        return self._http.get_json("/api/captures/live/sensehat")
+
+    def camera_frame(self) -> bytes:
+        """Latest live camera frame as JPEG bytes."""
+        return self._http.get_bytes("/api/captures/live/video/frame")
+
+    def camera_stream(self, max_items: Optional[int] = None,
+                      min_interval_s: float = 0.05) -> Iterator[bytes]:
+        """Yield live camera JPEG frames as they are produced."""
+        count = 0
+        while max_items is None or count < max_items:
+            try:
+                yield self.camera_frame()
+                count += 1
+            except APIError:
+                time.sleep(min_interval_s * 4)  # camera warming up
+                continue
+            time.sleep(min_interval_s)
+
+    def matrix(self) -> Dict[str, Any]:
+        """Current Sense HAT 8x8 LED matrix state."""
+        return self._http.get_json("/api/sensehat/matrix")
+
+    def set_matrix(self, *, pixels: Optional[list] = None,
+                   color: Optional[list] = None, text: Optional[str] = None,
+                   clear: bool = False, low_light: Optional[bool] = None,
+                   rotation: Optional[int] = None,
+                   speed: Optional[float] = None) -> Dict[str, Any]:
+        """Drive the Sense HAT LED matrix.
+
+        ``pixels`` accepts either 64 ``[r,g,b]`` entries or sparse
+        ``[x, y, r, g, b]`` tuples."""
+        body: Dict[str, Any] = {}
+        if pixels is not None:
+            body["pixels"] = pixels
+        if color is not None:
+            body["color"] = color
+        if text is not None:
+            body["text"] = text
+        if clear:
+            body["clear"] = True
+        if low_light is not None:
+            body["low_light"] = low_light
+        if rotation is not None:
+            body["rotation"] = rotation
+        if speed is not None:
+            body["speed"] = speed
+        return self._http.post_json("/api/sensehat/matrix", body)
+
     # -- captures -----------------------------------------------------------
     def captures(self) -> List[Dict[str, Any]]:
         payload = self._http.get_json("/api/captures")
@@ -145,5 +242,8 @@ def local(host: str = "thoth.local", port: int = 5000,
 
         node = thothcraft.local("thoth-april.local")
         node.occupancy()
+
+    Works against the Pi dashboard and against ``thothcraftd`` running on
+    any computer (laptop, Jetson) — the daemon exposes the same local API.
     """
     return LocalDevice(host, port=port, timeout=timeout)

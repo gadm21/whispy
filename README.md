@@ -89,6 +89,40 @@ thothcraft models cancel DEPLOYMENT_ID
 thothcraft predictions DEVICE_UUID --minute 20260922_0000
 ```
 
+## Any computer is a Thoth node
+
+`thothcraftd` runs on commodity hardware (Windows laptop, Mac, Linux box,
+Jetson) and exposes the same local API as the Pi dashboard on port 5000 —
+sensor inventory, live camera frames — plus Brain heartbeats once paired.
+
+```powershell
+# Windows
+irm https://get.thothcraft.com/install.ps1 | iex
+```
+
+```sh
+# Linux / macOS
+curl -fsSL https://get.thothcraft.com/install.sh | bash
+```
+
+From a cloned repo: `install.ps1 -Local .\packages` or
+`./install.sh --local ./packages`. The scripts install both packages (with
+the `sensors` extra: opencv, pyserial, psutil) and register thothcraftd as a
+logon task / systemd user service / LaunchAgent. The daemon serves the local
+API even before pairing, so this works immediately:
+
+```python
+import thothcraft
+node = thothcraft.local("127.0.0.1")      # or any node on the LAN
+node.sensors()                            # probed capabilities
+frame = node.camera_frame()               # JPEG bytes
+for batch in node.csi_stream():           # CSI sample batches
+    ...
+node.set_matrix(text="hi")                # Sense HAT LED matrix (Pi nodes)
+```
+
+`thothcraft pair` links the node to your account for heartbeats/sync.
+
 ## Debian / Raspberry Pi OS
 
 Build on Debian/Ubuntu with dpkg-deb:
