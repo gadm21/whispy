@@ -74,9 +74,28 @@ def watch_local(args) -> int:
     (``occupied`` above the threshold, ``empty`` below) which drives the
     device's linked Home Assistant actuator — e.g. the configured light.
     """
+    import threading
     import time
     from datetime import datetime
     node = thothcraft.local(args.local, timeout=10)
+
+    # Keep the node in dedicated live-streaming mode: the session file has a
+    # 15s TTL, so heartbeat well under that or the collector flaps back to
+    # minute collection (which is what makes the stream burst-then-stall).
+    stop_heartbeat = threading.Event()
+
+    def heartbeat():
+        while not stop_heartbeat.is_set():
+            try:
+                node.live_session("start")
+                wait = 5.0
+            except Exception:
+                wait = 1.0  # retry fast — a missed beat costs a radar re-init
+            stop_heartbeat.wait(wait)
+
+    hb = threading.Thread(target=heartbeat, daemon=True)
+    hb.start()
+
     print(f"watching {args.local} for radar SNR > {args.threshold} dB "
           f"(Ctrl+C to stop)")
     occupied = None      # edge-trigger: only predict on crossings
@@ -120,6 +139,8 @@ def watch_local(args) -> int:
             time.sleep(args.poll)
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        stop_heartbeat.set()
     return 0
 
 

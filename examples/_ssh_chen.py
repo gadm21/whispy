@@ -2,7 +2,7 @@
 import sys
 import paramiko
 
-HOST = "thoth-chen.local"
+HOST = "10.0.0.22"  # thoth-chen.local — mDNS flakes under load, use IP
 USER = "gad"
 PASS = "password"
 
