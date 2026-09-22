@@ -361,24 +361,8 @@ def deploy(
             print("[deploy] WARNING: MQTT connection failed — continuing without it")
             mqtt = None
 
-    # ── Cloud REST client (when no MQTT broker) ──────────────
-    cloud = None
-    if backend_url and not mqtt_broker and api_key:
-        from whispy.cloud_client import CloudClient
-        cloud = CloudClient(
-            backend_url=backend_url,
-            api_key=api_key,
-            node_id=mqtt_node,
-        )
-        result = cloud.register(
-            location=mqtt_location,
-            latitude=latitude, longitude=longitude,
-            task=mqtt_task, labels=labels,
-        )
-        if result:
-            print(f"[deploy] Registered with cloud backend: {backend_url}")
-        else:
-            print(f"[deploy] WARNING: Cloud registration failed — continuing anyway")
+    # The standalone Whispy cloud backend was retired — Brain is the only
+    # backend. MQTT publishing still works for local/HA deployments.
 
     # ── watchdog / health monitor ───────────────────────────
     health = None
@@ -453,13 +437,7 @@ def deploy(
                     pred=int(pred), confidence=conf_val,
                     label=label_str, all_probs=all_probs,
                 )
-            if cloud:
-                cloud.push_prediction(
-                    label=label_str or str(pred),
-                    class_idx=int(pred),
-                    confidence=conf_val,
-                    probabilities=all_probs,
-                )
+
 
             # ── health check + MQTT diagnostics (every ~15s) ──
             now = time.time()
@@ -486,20 +464,12 @@ def deploy(
                         esp32_alive=csi_rate > 0,
                         cache_mb=cache.used_bytes / 1024**2,
                     )
-                if cloud:
-                    cloud.push_diagnostics(
-                        csi_rate=csi_rate,
-                        cpu_temp=cpu_temp,
-                        esp32_alive=csi_rate > 0,
-                        cache_mb=cache.used_bytes / 1024**2,
-                    )
+
 
     finally:
         _stop.set()
         if mqtt:
             mqtt.disconnect()
-        if cloud:
-            print(f"[deploy] Cloud stats: {cloud.stats}")
         print(f"\n[deploy] Stopped.  Cache: {cache}")
 
 
