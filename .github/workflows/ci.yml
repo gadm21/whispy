@@ -1,0 +1,38 @@
+name: Tooling CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [sdk, cli]
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e packages/thothcraft-sdk -e packages/thothcraft-${{ matrix.package }} pytest
+      - run: python -m pytest packages/thothcraft-${{ matrix.package }}/tests
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash packaging/build-deb.sh
+      - run: sudo apt-get install -y ./thothcraft-cli_*_all.deb
+      - run: thothcraft --help && thothcraftd --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: '*.deb'
+  publish-stub:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Configure PyPI trusted publishing before enabling release uploads.'

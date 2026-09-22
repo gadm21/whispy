@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thothcraft-sdk"
+version = "0.1.0"
+description = "ThothCraft Python SDK — devices, minutes, sensors, datasets and research workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+ml = ["scikit-learn>=1.3", "pandas>=2.0"]
+dl = ["torch>=2.0"]
+viz = ["matplotlib>=3.7"]
+all = ["scikit-learn>=1.3", "pandas>=2.0", "torch>=2.0", "matplotlib>=3.7"]
+
+[tool.setuptools.packages.find]
+include = ["thothcraft*"]
+
+[tool.setuptools.package-data]
+thothcraft = ["py.typed"]

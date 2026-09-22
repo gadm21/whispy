@@ -1,228 +1,136 @@
-# 🔮 Whispy — WiFi Intelligence on ESP
+# ThothCraft Python tooling
 
-**Whispy** is a Python toolkit for WiFi CSI (Channel State Information) sensing research using ESP32 microcontrollers. It provides an end-to-end pipeline from data collection to federated learning.
+This repository contains `thothcraft-sdk` and `thothcraft-cli`. The former whispy
+package is retired. Python 3.10–3.13 are tested in CI; import `thothcraft` and run
+`thothcraft`/`thothcraftd`. The GitHub repository can be renamed later.
 
-## Installation
-
-```bash
-pip install whispy                  # core only
-pip install whispy[all]             # everything
-pip install whispy[collect,camera]  # collection + face detection
-pip install whispy[dl,fl]           # deep learning + federated
-pip install whispy[mqtt]            # Home Assistant MQTT integration
-pip install whispy[watchdog]        # system health + systemd
-pip install whispy[pi]              # Raspberry Pi GPIO (ESP32 reset relay)
-pip install whispy[backend]         # central server (FastAPI + SQLite)
+```sh
+python -m pip install -e packages/thothcraft-sdk -e packages/thothcraft-cli
+thothcraft login --base-url https://web-production-d7d37.up.railway.app
+thothcraft devices
+thothcraft models list
 ```
 
-## Quick Start
+The default API URL is `https://api.thothcraft.com`. Until DNS and the Railway
+custom domain are ready, use the Railway URL above. Login stores URL and token
+in `~/.thothcraft/credentials.json`; `Client.login()` restores both.
+Raw downloads require Home or Research; Labs and datasets require Research.
 
-```bash
-# Collect CSI data (1-min standardized files)
-whispy collect --port COM5 --label myroom --duration 300
+## Train → export → upload → deploy → predict
 
-# Collect with face detection (auto occupancy labels)
-whispy collect --port COM5 --label indoor --camera
-
-# Deploy with 1 GB rolling cache (default)
-whispy deploy --port COM5 --model ./model.pkl
-
-# Deploy with Home Assistant integration
-whispy deploy --port /dev/ttyUSB0 --model model.pkl \
-    --mqtt-broker 192.168.1.100 --mqtt-node office --mqtt-location "Office" \
-    --labels empty,occupied --cache-gb 1.0
-
-# Deploy with watchdog + GPIO ESP32 reset
-whispy deploy --port /dev/ttyUSB0 --model model.pkl \
-    --watchdog --gpio-pin 17 --mqtt-broker localhost
-
-# Test Home Assistant MQTT connection
-whispy mqtt test --broker 192.168.1.100 --node office
-
-# Export last 5 minutes from the rolling cache (Python API)
-# from whispy.watchdog import export_cache
-# export_cache(cache, minutes=5, n_files=5, out_dir="./data")
-
-# Check system health
-whispy watchdog status
-
-# Generate systemd service for auto-start on Pi
-whispy watchdog service --port /dev/ttyUSB0 --model model.pkl \
-    --mqtt-broker localhost > /etc/systemd/system/whispy.service
-
-# ── Global Deployment (central server + remote nodes) ──
-
-# 1. Generate broker config with TLS + auth
-whispy backend init --domain mqtt.example.com
-
-# 2. Add credentials for a new device
-whispy backend add-device --node-id lab-toronto-01
-
-# 3. Start the central backend server
-whispy backend start --broker mqtt.example.com --port 8000
-
-# 4. On a remote Pi: deploy with cloud broker + auto-registration
-whispy deploy --port /dev/ttyUSB0 --model model.pkl \
-    --mqtt-broker mqtt.example.com --mqtt-port 8883 --mqtt-tls \
-    --mqtt-user lab-toronto-01 --mqtt-password <pw> \
-    --mqtt-node lab-toronto-01 --mqtt-location "Toronto Lab" \
-    --latitude 43.6532 --longitude -79.3832 \
-    --backend-url http://api.example.com:8000
-
-# 5. Discover ESP32 receivers on the current machine
-whispy device discover
-
-# 6. Register device via REST API
-whispy device register --node-id lab-toronto-01 \
-    --location Toronto --latitude 43.65 --longitude -79.38 \
-    --backend-url http://api.example.com:8000
-
-# Load a built-in dataset from HuggingFace
-whispy load OfficeLocalization --out ./data
-
-# Train on a dataset
-whispy train --data ./data/office_loc --pipeline rv20 --model rf
-
-# Visualize results
-whispy vis --results ./results/
-
-# Federated learning simulation
-whispy fl --data ./data/office_loc --strategy fedavg --clients 4
-```
-
-## Python API
+Install `packages/thothcraft-sdk[dl]` for PyTorch. This example trains on
+**synthetic demonstration data**, not validated sensor data. Replace it with
+labeled windows, matching the device's thoth-model/v1 preprocessing and shape.
 
 ```python
-import whispy
+from pathlib import Path
+import torch
+from thothcraft import Client
 
-# Load built-in dataset
-train, test = whispy.load("OfficeLocalization")
-
-# Build a processing pipeline
-pipeline = whispy.Pipeline([
-    whispy.Resample(in_sr=200, out_sr=150),
-    whispy.RollingVariance(window=20),
-    whispy.Window(length=500, stride=500),
-    whispy.Flatten(),
-])
-
-# Train
-results = whispy.train(train, test, pipeline=pipeline, model="rf")
-whispy.vis.plot_results(results)
+torch.manual_seed(7)
+x = torch.randn(64, 1, 1, 8)
+y = (x.mean(dim=(1, 2, 3)) > 0).long()
+net = torch.nn.Sequential(torch.nn.Flatten(1), torch.nn.Linear(8, 2))
+optimizer = torch.optim.Adam(net.parameters(), lr=0.01)
+for _ in range(100):
+    optimizer.zero_grad()
+    torch.nn.functional.cross_entropy(net(x), y).backward()
+    optimizer.step()
+net.eval()
+path = Path('occupancy.pt')
+torch.jit.trace(net, x[:1]).save(str(path))
+client = Client.login()
+model = client.upload_model(
+    path, name='Occupancy demo', classes=['empty', 'occupied'],
+    input_spec={'sensor': 'radar', 'representation': 'raw_adc',
+                'frames': 1, 'shape': [1, 1, 1, 8],
+                'fit': 'left_pad_latest', 'normalization': {'kind': 'none'}},
+)
+device = client.devices()[0]
+deployment = device.deploy(model, timeout=180)
+print(deployment.status)  # delivered or declined
+print(device.predictions())  # may be empty until the next capture
+for chunk in device.stream(max_items=10):
+    print(chunk.get('model_predictions', []))
 ```
 
-## Built-in Datasets
+`device.deploy(path, name=..., classes=..., input_spec=...)` uploads first.
+Use `wait=False` to return immediately. A wait timeout raises `TimeoutError`
+without cancelling the request. `client.cancel_deployment(id)` cancels pending
+deployments; `client.set_deployment_active(id, enabled)` controls delivered models.
 
-| Dataset | Task | Classes | Environment |
-|---------|------|---------|-------------|
-| `OfficeLocalization` | Localization | 4 | Office |
-| `OfficeHAR` | Activity Recognition | 4 | Office |
-| `HomeHAR` | Activity Recognition | 7 | Home |
-| `HomeOccupation` | Occupancy Detection | 3 | Home |
+## Data interoperability
 
-## Modules
+```python
+from thothcraft import Dataset
+from thothcraft.datasets.torch import ThothTorchDataset  # requires [dl]
 
-- **`whispy.collect`** — Standardized CSI collection with ESP32
-- **`whispy.load`** — Built-in dataset loading from HuggingFace
-- **`whispy.train`** — ML/DL training with configurable pipelines
-- **`whispy.vis`** — Matplotlib visualization for results and live data
-- **`whispy.fl`** — Federated learning with Flower (FedAvg, FedProx, etc.)
-- **`whispy.core`** — CSI processing primitives (resampling, subcarrier mask, etc.)
-- **`whispy.watchdog`** — Rolling CSI cache (resizable, default 1 GB), health monitoring, systemd integration, data export
-- **`whispy.mqtt`** — MQTT publisher with Home Assistant auto-discovery, TLS, connection testing
-- **`whispy.device`** — Device registry, receiver auto-discovery, GPS location, hardware attributes
-- **`whispy.backend`** — Central FastAPI server: device registry, MQTT subscriber, data upload, FL coordination
-- **`whispy.broker`** — Mosquitto config generator with TLS, authentication, ACLs for cloud deployment
-
-## System Explanation
-
-This section explains how Whispy operates as a complete CSI sensing system across collection, training, deployment, monitoring, and distributed coordination.
-
-### Architecture Overview
-
-```mermaid
-flowchart LR
-    ESP[ESP32 Receiver] -->|CSI over serial| COL[whispy.collect / deploy]
-    COL --> CORE[whispy.core preprocessing]
-    CORE --> PIPE[whispy.pipeline steps]
-    PIPE --> TRAIN[whispy.train models]
-    TRAIN --> DEPLOY[Live inference]
-
-    DEPLOY --> MQTT[whispy.mqtt publisher]
-    DEPLOY --> WD[whispy.watchdog health monitor]
-    DEPLOY --> CACHE[Rolling CSI cache]
-
-    MQTT --> HA[Home Assistant / IoT subscribers]
-    MQTT --> BACKEND[whispy.backend FastAPI + SQLite]
-    BACKEND --> FL[whispy.fl coordination]
+with device.minute('20260922_0000') as minute:
+    values = minute['radar'].to_numpy()
+    table = minute['radar'].to_dataframe()  # requires [pandas]
+    tensor = minute['radar'].to_torch()     # requires [dl]
+    minute.label(activity=0)
+    dataset = Dataset('example').add(minute)
+    X, y = dataset.to_xy(sensor='radar', label='activity')
+    adapter = ThothTorchDataset(dataset, sensor='radar', label='activity')
 ```
 
-### Data Flow
+Minute iterates four sensor keys: radar, csi, camera, sense. NumPy conversion
+decodes radar ADC bytes and CSI real/imag channels. Numeric samples are stacked;
+ragged windows raise ValueError and need explicit padding/windowing. Decode
+camera images before ML use. `to_xy` returns one flattened row per minute and
+requires a label on every minute. Downloads are ZIP bundles containing capture.npz.
 
-1. **Collection** (`whispy.collect`) reads CSI packets from ESP32 serial output and writes standardized session files.
-2. **Core processing** (`whispy.core`) parses packet format, applies subcarrier masking (64 to 52), and builds time-series arrays.
-3. **Pipeline transformations** (`whispy.pipeline`) apply resampling, rolling variance, windowing, and flattening.
-4. **Training** (`whispy.train`) fits ML or DL models and returns metrics for evaluation.
-5. **Deployment** (`whispy deploy`) runs the trained model on live CSI streams and emits predictions.
-6. **Observability and integration** (`whispy.mqtt`, `whispy.watchdog`, `whispy.backend`) publish state, track health, and persist diagnostics.
-
-### Deployment Topology
-
-```mermaid
-flowchart TD
-    subgraph EdgeNode[Raspberry Pi Edge Node]
-        S[Serial reader]
-        B[CSI buffer]
-        M[Model inference]
-        W[HealthMonitor]
-        Q[MQTT publisher]
-        C[Rolling cache]
-        S --> B --> M
-        M --> Q
-        B --> C
-        W --> Q
-    end
-
-    ESP[ESP32 collector] --> S
-    Q --> BROKER[Mosquitto broker]
-    BROKER --> HA[Home Assistant]
-    BROKER --> API[Central backend]
-    API --> DB[(SQLite time-series DB)]
+```sh
+thothcraft models upload model.pt --name Occupancy --classes empty,occupied --input-spec inputs.json
+thothcraft models deploy 7 DEVICE_UUID --timeout 180
+thothcraft models deployments
+thothcraft models cancel DEPLOYMENT_ID
+thothcraft predictions DEVICE_UUID --minute 20260922_0000
 ```
 
-### Module Responsibilities
+## Debian / Raspberry Pi OS
 
-- **`whispy.collect`**: live collection loops, standardized storage, optional camera-assisted labeling.
-- **`whispy.core`**: packet parsing and low-level CSI transforms.
-- **`whispy.pipeline`**: composable preprocessing stages.
-- **`whispy.train`**: training entrypoints for RF/XGB/MLP/Conv1D/CNN-LSTM.
-- **`whispy.vis`**: result plots and exploratory visualizations.
-- **`whispy.fl`**: federated simulation and aggregation strategies.
-- **`whispy.mqtt`**: telemetry publishing, Home Assistant discovery, and broker connectivity checks.
-- **`whispy.watchdog`**: health checks (rate, CPU, memory, disk), systemd heartbeat, and recovery hooks.
-- **`whispy.device`**: device metadata, receiver discovery, and node registration helpers.
-- **`whispy.backend`**: central API for devices, uploads, predictions, diagnostics, and FL exchange.
-- **`whispy.broker`**: Mosquitto configuration generation with TLS/auth/ACL support.
+Build on Debian/Ubuntu with dpkg-deb:
 
-### Runtime States
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Collecting: whispy collect
-    Idle --> Deploying: whispy deploy
-    Collecting --> Idle: session complete
-    Deploying --> Monitoring: watchdog enabled
-    Monitoring --> Publishing: mqtt enabled
-    Publishing --> Deploying: periodic loop
-    Deploying --> Idle: shutdown
+```sh
+bash packaging/build-deb.sh
+sudo apt install ./thothcraft-cli_0.1.0_all.deb
+thothcraft login
+thothcraft device init
+systemctl --user daemon-reload
+systemctl --user enable --now thothcraftd
 ```
 
-### Why the backend + MQTT path exists
+The architecture-independent package ships sources. Post-install creates
+`/opt/thothcraft/venv` on the target machine and installs both packages; network
+access is required. This avoids shipping a nonrelocatable virtualenv or x86
+NumPy binaries to a Pi. The unit is installed to `/usr/lib/systemd/user`.
+Credentials stay in the user's home. Enable user lingering separately if needed
+after logout. Stop the user unit before removing the package.
 
-The MQTT path is optimized for low-latency state sharing with smart-home and automation systems. The backend path is optimized for persistence, querying, cross-device coordination, and FL model lifecycle management. In practical deployments, both run together: MQTT carries real-time events while the backend stores history and orchestration metadata.
+The existing daemon implements pairing and heartbeats; collection, inference,
+sync and command execution remain TODOs. The full Pi runtime is in `thoth`.
 
+### Optional signed APT repository (manual)
 
-## License
+1. Install reprepro and gnupg on a trusted Linux publishing machine. Generate a
+   dedicated signing key and keep its private material out of GitHub.
+2. Create `apt/conf/distributions` with `Codename: stable`, `Components: main`,
+   `Architectures: amd64 arm64`, and `SignWith: YOUR_KEY_FINGERPRINT`.
+3. Run `reprepro -b apt includedeb stable thothcraft-cli_0.1.0_all.deb`.
+4. Export the public key with `gpg --armor --export YOUR_KEY_FINGERPRINT > apt/key.asc`
+   and publish the apt directory to GitHub Pages over HTTPS.
+5. Install the dearmored key at `/etc/apt/keyrings/thothcraft.gpg`. Add
+   `deb [signed-by=/etc/apt/keyrings/thothcraft.gpg] https://OWNER.github.io/REPO stable main`
+   to `/etc/apt/sources.list.d/thothcraft.list`, then run `sudo apt update`.
 
-MIT
+## Development
+
+```sh
+python -m pip install -e packages/thothcraft-sdk -e packages/thothcraft-cli pytest
+python -m pytest packages/thothcraft-sdk/tests packages/thothcraft-cli/tests
+```
+
+CI tests both packages on Python 3.10–3.13 and builds/installs the Debian package.
+The PyPI tag job remains a stub until trusted publishing is configured.

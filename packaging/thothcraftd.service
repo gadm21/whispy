@@ -1,0 +1,13 @@
+[Unit]
+Description=ThothCraft device heartbeat daemon
+After=network-online.target
+
+[Service]
+ExecStart=/opt/thothcraft/venv/bin/thothcraftd
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -9,3 +9,6 @@ build/
 .venv/
 venv/
 .env
+
+*.deb
+.pytest_cache/

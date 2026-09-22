@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thothcraft-cli"
+version = "0.1.0"
+description = "ThothCraft CLI and device runtime — turn any computer into a Thoth device"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "click>=8.1",
+    "thothcraft-sdk>=0.1.0",
+]
+
+[project.optional-dependencies]
+sensors = ["psutil>=5.9", "opencv-python>=4.8", "pyserial>=3.5"]
+
+[project.scripts]
+thothcraft = "thothcraft_cli.main:main"
+thothcraftd = "thothcraft_cli.daemon:main"
+
+[tool.setuptools.packages.find]
+include = ["thothcraft_cli*"]
