@@ -84,8 +84,12 @@ class LocalDevice:
         return {
             "snr_db": det.get("snr_db"),
             "threshold_db": det.get("threshold_db", state.get("threshold_db")),
-            "detected": bool(state.get("person_detected")),
+            "peak_power_db": det.get("peak_power_db"),
+            "noise_floor_db": det.get("noise_floor_db"),
+            "detected": bool(state.get("person_detected") or det.get("detected")),
             "stale": bool(state.get("stale")),
+            "updated_at": state.get("updated_at"),
+            "age_seconds": state.get("age_seconds"),
         }
 
     # -- captures -----------------------------------------------------------

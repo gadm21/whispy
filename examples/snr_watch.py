@@ -75,10 +75,12 @@ def watch_local(args) -> int:
     device's linked Home Assistant actuator — e.g. the configured light.
     """
     import time
+    from datetime import datetime
     node = thothcraft.local(args.local, timeout=10)
     print(f"watching {args.local} for radar SNR > {args.threshold} dB "
           f"(Ctrl+C to stop)")
-    occupied = None  # edge-trigger: only predict on crossings
+    occupied = None      # edge-trigger: only predict on crossings
+    last_updated = None  # dedupe: the live state only changes per radar frame
     try:
         while True:
             try:
@@ -87,18 +89,31 @@ def watch_local(args) -> int:
                 print(f"poll failed: {exc}")
                 time.sleep(args.poll)
                 continue
+            if snr["updated_at"] == last_updated:
+                time.sleep(args.poll)
+                continue  # same frame — nothing new to report
+            last_updated = snr["updated_at"]
             value = snr["snr_db"]
             if value is None:
                 print(f"no frames yet (stale={snr['stale']})   ", end="\r")
             else:
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 now_occupied = value > args.threshold
                 flag = f" > {args.threshold}" if now_occupied else ""
-                print(f"SNR {value:.2f} dB{flag} (detected={snr['detected']})   ")
+                peak = snr.get("peak_power_db")
+                floor = snr.get("noise_floor_db")
+                age = snr.get("age_seconds")
+                detail = (f"peak {peak:.1f} / floor {floor:.1f}, "
+                          if peak is not None and floor is not None else "")
+                detail += f"age {age:.1f}s" if age is not None else ""
+                print(f"[{ts}] SNR {value:6.2f} dB{flag} ({detail})")
                 if now_occupied != occupied:
                     occupied = now_occupied
                     label = "occupied" if occupied else "empty"
+                    # high confidence either way: for 'empty' the occupancy
+                    # probability is 1-confidence, so the light turns OFF
                     try:
-                        result = node.predict(label, confidence=min(1.0, value / 10.0))
+                        result = node.predict(label, confidence=0.9)
                         print(f"  -> predicted '{label}': {result.get('ha', result)}")
                     except Exception as exc:
                         print(f"  -> predict('{label}') failed: {exc}")
