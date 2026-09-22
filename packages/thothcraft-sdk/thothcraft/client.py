@@ -18,7 +18,9 @@ from .models import Model, Deployment
 
 from .errors import APIError, AuthError, EntitlementError, NotFoundError
 
-DEFAULT_BASE_URL = os.getenv("THOTHCRAFT_API_URL", "https://api.thothcraft.com")
+DEFAULT_BASE_URL = os.getenv(
+    "THOTHCRAFT_API_URL",
+    "https://web-production-d7d37.up.railway.app")
 _CREDENTIALS_PATH = os.path.expanduser(
     os.getenv("THOTHCRAFT_CREDENTIALS", "~/.thothcraft/credentials.json")
 )
