@@ -79,6 +79,22 @@ class LocalDevice:
         """Current detection SNR: ``{"snr_db", "threshold_db", "detected"}``.
 
         Values are None when the radar hasn't produced a frame yet."""
+        # Prefer the per-frame sidecar (updates every processed frame);
+        # fall back to the throttled full live state on older builds.
+        try:
+            state = self._http.get_json("/api/radar/snr")
+            return {
+                "snr_db": state.get("snr_db"),
+                "threshold_db": state.get("threshold_db"),
+                "peak_power_db": state.get("peak_power_db"),
+                "noise_floor_db": state.get("noise_floor_db"),
+                "detected": bool(state.get("detected")),
+                "stale": bool(state.get("stale")),
+                "updated_at": state.get("updated_at"),
+                "age_seconds": state.get("age_seconds"),
+            }
+        except Exception:
+            pass
         state = self.radar_live()
         det = ((state.get("intensity") or {}).get("example2_xy") or {}).get("detection") or {}
         return {
