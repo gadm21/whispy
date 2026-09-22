@@ -12,6 +12,8 @@ from .devices import Device, CollectionSession
 from .minutes import Minute, SensorData
 from .models import Model, Deployment
 from .datasets import Dataset
+from .spaces import Space, Zone
+from .local import LocalDevice, local
 from .errors import (
     ThothError,
     AuthError,
@@ -31,6 +33,10 @@ __all__ = [
     "CollectionSession",
     "Minute",
     "SensorData",
+    "Space",
+    "Zone",
+    "LocalDevice",
+    "local",
     "ThothError",
     "AuthError",
     "EntitlementError",

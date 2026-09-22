@@ -218,6 +218,106 @@ def sensors_list():
         click.echo(f"{'✓' if avail else '✗'} {name:<14} {detail}")
 
 
+@sensors.command("drivers")
+def sensors_drivers():
+    """List installed sensor-driver plugins (entry points)."""
+    try:
+        from thothcraft.sensors.base import installed_drivers
+    except ImportError:
+        raise click.ClickException("thothcraft SDK not installed")
+    drivers = installed_drivers()
+    if not drivers:
+        click.echo("No sensor drivers installed.")
+        return
+    for name, cls in drivers.items():
+        try:
+            meta = cls().metadata()
+            click.echo(f"{name:<20} {meta.version:<10} {','.join(meta.modalities)}")
+        except Exception as exc:
+            click.echo(f"{name:<20} (metadata failed: {exc})")
+
+
+@sensors.command("test")
+@click.argument("driver")
+def sensors_test(driver):
+    """Run the conformance suite against an installed driver."""
+    try:
+        from thothcraft.sensors.base import check_driver, installed_drivers
+    except ImportError:
+        raise click.ClickException("thothcraft SDK not installed")
+    drivers = installed_drivers()
+    if driver not in drivers:
+        raise click.ClickException(
+            f"unknown driver '{driver}'. Installed: {', '.join(drivers) or 'none'}")
+    report = check_driver(drivers[driver]())
+    for check in report["checks"]:
+        mark = "✓" if check["ok"] else "✗"
+        click.echo(f"{mark} {check['name']:<12} {check.get('detail', '')}")
+    click.echo("PASSED" if report["passed"] else "FAILED")
+    if not report["passed"]:
+        raise SystemExit(1)
+
+
+_DRIVER_TEMPLATE = '''"""ThothCraft sensor driver: {name}."""
+from thothcraft.sensors.base import (
+    HealthReport, SensorDriver, SensorFrame, SensorMeta,
+)
+
+
+class {cls}(SensorDriver):
+    def metadata(self):
+        return SensorMeta(name="{name}", modalities=("{modality}",))
+
+    def discover(self):
+        return []  # TODO: probe hardware, return [{{"id": ...}}]
+
+    def open(self, config=None):
+        pass  # TODO: acquire hardware
+
+    def stream(self):
+        return
+        yield  # TODO: yield SensorFrame.now("{modality}", data)
+
+    def close(self):
+        pass  # TODO: release hardware
+'''
+
+_PYPROJECT_TEMPLATE = '''[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thothcraft-sensor-{name}"
+version = "0.1.0"
+description = "ThothCraft sensor driver for {name}"
+dependencies = ["thothcraft-sdk>=0.1.0"]
+
+[project.entry-points."thothcraft.sensors"]
+{name} = "thothcraft_sensor_{name}:{cls}"
+'''
+
+
+@sensors.command("new")
+@click.argument("name")
+@click.option("--modality", default="custom",
+              help="Sensor modality (radar, csi, camera, env, ...)")
+@click.option("--out", "out_dir", type=click.Path(file_okay=False, path_type=Path),
+              default=".")
+def sensors_new(name, modality, out_dir):
+    """Scaffold a new sensor-driver package."""
+    safe = name.lower().replace("-", "_")
+    cls = "".join(part.title() for part in safe.split("_")) + "Driver"
+    pkg = Path(out_dir) / f"thothcraft-sensor-{safe}"
+    (pkg / f"thothcraft_sensor_{safe}").mkdir(parents=True, exist_ok=True)
+    (pkg / "pyproject.toml").write_text(
+        _PYPROJECT_TEMPLATE.format(name=safe, cls=cls), encoding="utf-8")
+    (pkg / f"thothcraft_sensor_{safe}" / "__init__.py").write_text(
+        _DRIVER_TEMPLATE.format(name=safe, cls=cls, modality=modality),
+        encoding="utf-8")
+    click.echo(f"✓ scaffolded {pkg}")
+    click.echo(f"  install with: pip install -e {pkg}")
+
+
 # ── data ──────────────────────────────────────────────────────────────────────
 
 @main.group(invoke_without_command=True)
@@ -312,6 +412,148 @@ def models_deployments():
 @click.argument('deployment_id')
 def models_cancel(deployment_id):
     click.echo(json.dumps(_client().cancel_deployment(deployment_id)))
+
+
+@models.command('registry')
+@click.option('--sensor', default=None, help='Filter by sensor (radar, csi, camera, fusion)')
+@click.option('--task', default=None, help='Filter by task (occupancy, har, localization)')
+def models_registry(sensor, task):
+    """Browse the public processor catalog."""
+    for model in _client().registry(sensor=sensor, task=task):
+        info = model.info
+        click.echo(
+            f"{info.get('registry_name') or info.get('name'):<40} "
+            f"{info.get('processor_type') or '':<12} "
+            f"{info.get('sensor') or '-':<8} {info.get('task') or '-':<14} "
+            f"{info.get('visibility') or 'private'}")
+
+
+@models.command('install')
+@click.argument('registry_name')
+@click.argument('device_id')
+@click.option('--wait/--no-wait', default=True)
+@click.option('--timeout', type=click.FloatRange(min=0), default=180.0)
+def models_install(registry_name, device_id, wait, timeout):
+    """Deploy a registry model by name: thothcraft models install thothcraft/radar-occupancy-v2 <device>."""
+    client = _client()
+    device = client.device(device_id)
+    try:
+        deployment = device.deploy(registry_name, wait=wait, timeout=timeout)
+    except TimeoutError as exc:
+        raise click.ClickException(str(exc)) from exc
+    info = deployment.info if hasattr(deployment, 'info') else deployment
+    click.echo(json.dumps(info, indent=2))
+
+
+@models.command('rule')
+@click.argument('name')
+@click.option('--when', required=True, help='Rule expression, e.g. "snr_mean > snr_threshold"')
+@click.option('--label', 'rule_label', required=True, help='Label when the rule fires')
+@click.option('--else', 'else_label', default='unknown')
+@click.option('--param', multiple=True, help='key=value tunable params')
+@click.option('--sensor', default=None)
+@click.option('--task', default=None)
+@click.option('--registry-name', default=None)
+def models_rule(name, when, rule_label, else_label, param, sensor, task, registry_name):
+    """Create a config-only rule processor (no artifact)."""
+    params = {}
+    for p in param:
+        key, _, value = p.partition('=')
+        try:
+            params[key] = float(value)
+        except ValueError:
+            params[key] = value
+    model = _client().create_rule_model(
+        name, rules=[{"when": when, "label": rule_label}],
+        else_label=else_label, params=params,
+        sensor=sensor, task=task, registry_name=registry_name)
+    click.echo(json.dumps(model.info, indent=2))
+
+
+@models.command('publish')
+@click.argument('model_id', type=int)
+@click.option('--visibility', default='community',
+              type=click.Choice(['community', 'official', 'private']))
+@click.option('--registry-name', default=None)
+def models_publish(model_id, visibility, registry_name):
+    """Publish a model to the community registry."""
+    model = _client().publish_model(
+        model_id, visibility=visibility, registry_name=registry_name)
+    click.echo(json.dumps(model.info, indent=2))
+
+
+# ── spaces ────────────────────────────────────────────────────────────────────
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def spaces(ctx):
+    """Spatial context: named areas, zones, live occupancy."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(spaces_list)
+
+
+@spaces.command('list')
+def spaces_list():
+    """List spaces with live occupancy."""
+    client = _client()
+    states = {s['name']: s for s in client.spaces_state()}
+    for space in client.spaces():
+        state = states.get(space.name, {})
+        mark = '●' if state.get('occupied') else '○'
+        people = state.get('people_count') or 0
+        click.echo(f"{mark} {space.name:<20} people={people} zones={len(space.zones)}")
+
+
+@spaces.command('create')
+@click.argument('name')
+@click.option('--width', 'width_m', type=float, default=None)
+@click.option('--height', 'height_m', type=float, default=None)
+def spaces_create(name, width_m, height_m):
+    space = _client().create_space(name, width_m=width_m, height_m=height_m)
+    click.echo(f"✓ created space '{space.name}' (id={space.id})")
+
+
+@spaces.command('state')
+@click.argument('name', required=False)
+def spaces_state(name):
+    """Show live spatial state (one space or all)."""
+    client = _client()
+    if name:
+        click.echo(json.dumps(client.space(name).state(), indent=2))
+    else:
+        click.echo(json.dumps(client.spaces_state(), indent=2))
+
+
+@spaces.command('zone')
+@click.argument('space_name')
+@click.argument('zone_name')
+@click.argument('polygon')  # JSON polygon, e.g. "[[0,0],[2,0],[2,2],[0,2]]"
+def spaces_zone(space_name, zone_name, polygon):
+    """Add a zone polygon to a space."""
+    try:
+        points = json.loads(polygon)
+    except ValueError as exc:
+        raise click.ClickException(f"invalid polygon JSON: {exc}") from exc
+    zone = _client().space(space_name).add_zone(zone_name, points)
+    click.echo(f"✓ zone '{zone.name}' added")
+
+
+@spaces.command('place')
+@click.argument('device_id')
+@click.argument('space_name')
+@click.option('--x', type=float, default=0.0)
+@click.option('--y', type=float, default=0.0)
+@click.option('--rotation', 'rotation_deg', type=float, default=0.0)
+@click.option('--fov', 'fov_deg', type=float, default=90.0)
+@click.option('--range', 'range_m', type=float, default=8.0)
+def spaces_place(device_id, space_name, x, y, rotation_deg, fov_deg, range_m):
+    """Place a device inside a space (plan coordinates in meters)."""
+    client = _client()
+    space = client.space(space_name)
+    placement = client.device(device_id).place(
+        space, x=x, y=y, rotation_deg=rotation_deg,
+        fov_deg=fov_deg, range_m=range_m)
+    click.echo(json.dumps(placement, indent=2))
 
 
 @main.command()

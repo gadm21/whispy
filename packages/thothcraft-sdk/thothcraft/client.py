@@ -108,6 +108,23 @@ class _Http:
         except ValueError:
             return {"raw": raw.decode("utf-8", errors="replace")}
 
+    def put_json(self, path: str, body: dict | None = None,
+                 params: dict | None = None) -> Any:
+        data = json.dumps(body or {}).encode("utf-8")
+        raw = self._request("PUT", path, params=params, body=data,
+                            headers={"Content-Type": "application/json"})
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return {"raw": raw.decode("utf-8", errors="replace")}
+
+    def delete(self, path: str, params: dict | None = None) -> Any:
+        raw = self._request("DELETE", path, params=params)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return {"raw": raw.decode("utf-8", errors="replace")}
+
 
 class Client:
     """Entry point: authenticate against Brain and open devices/minutes."""
@@ -269,6 +286,88 @@ class Client:
         return self._http.post_multipart(
             f"/api/labs/{lab_id}/submit", "notebook",
             os.path.basename(notebook_path), content)
+
+    # -- spaces (spatial context) ----------------------------------------
+
+    def spaces(self) -> list:
+        """All spaces (named physical areas) on the account."""
+        from .spaces import Space
+        payload = self._http.get_json("/api/spaces")
+        return [Space(self._http, s) for s in payload.get("spaces", [])]
+
+    def space(self, name_or_id) -> "Space":
+        """Look up one space by name or id."""
+        from .spaces import Space
+        for space in self.spaces():
+            if space.id == name_or_id or space.name == name_or_id:
+                return space
+        raise NotFoundError(f"space not found: {name_or_id}")
+
+    def create_space(self, name: str, *, parent_id: Optional[int] = None,
+                     width_m: Optional[float] = None,
+                     height_m: Optional[float] = None,
+                     floor_plan_file_id: Optional[int] = None) -> "Space":
+        from .spaces import Space
+        payload = self._http.post_json("/api/spaces", {
+            "name": name, "parent_id": parent_id,
+            "width_m": width_m, "height_m": height_m,
+            "floor_plan_file_id": floor_plan_file_id,
+        })
+        return Space(self._http, payload.get("space") or {})
+
+    def spaces_state(self) -> list:
+        """Live spatial state for every space — the context API."""
+        return self._http.get_json("/api/spaces/state").get("spaces", [])
+
+    # -- model registry ---------------------------------------------------
+
+    def registry(self, sensor: Optional[str] = None,
+                 task: Optional[str] = None) -> list[Model]:
+        """Public processor catalog (official + community + own models)."""
+        params = {k: v for k, v in {"sensor": sensor, "task": task}.items()
+                  if v is not None}
+        payload = self._http.get_json("/api/datasets/models/registry", params)
+        return [Model(self, row) for row in payload.get("models", [])]
+
+    def resolve_model(self, registry_name: str) -> Model:
+        """Resolve 'thothcraft/radar-occupancy-v2' → Model."""
+        payload = self._http.get_json(
+            f"/api/datasets/models/registry/{registry_name}")
+        return Model(self, payload.get("model") or {})
+
+    def create_rule_model(self, name: str, rules: list, *,
+                          else_label: str = "unknown",
+                          params: Optional[dict] = None,
+                          sensor: Optional[str] = None,
+                          task: Optional[str] = None,
+                          registry_name: Optional[str] = None,
+                          config_schema: Optional[dict] = None) -> Model:
+        """Register a config-only rule processor — no artifact needed.
+
+            client.create_rule_model(
+                "snr-occupancy",
+                rules=[{"when": "snr_mean > snr_threshold", "label": "occupied"}],
+                else_label="empty",
+                params={"snr_threshold": 12.0},
+                sensor="radar", task="occupancy")
+        """
+        payload = self._http.post_json("/api/datasets/models/rule", {
+            "name": name, "rules": rules, "else": else_label,
+            "params": params or {}, "sensor": sensor, "task": task,
+            "registry_name": registry_name,
+            "config_schema": config_schema or {},
+        })
+        return Model(self, payload.get("model") or {})
+
+    def publish_model(self, model_id: int, *,
+                      visibility: str = "community",
+                      registry_name: Optional[str] = None) -> Model:
+        params = {"visibility": visibility}
+        if registry_name:
+            params["registry_name"] = registry_name
+        payload = self._http.post_json(
+            f"/api/datasets/models/{model_id}/publish", params=params)
+        return Model(self, payload.get("model") or {})
 
     def __repr__(self) -> str:
         return f"Client({self._http.base_url})"

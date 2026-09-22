@@ -76,18 +76,38 @@ class Device:
 
     def deploy(self, model_or_path, wait: bool = True, *, timeout: float = 180,
                config: dict | None = None, **upload_options):
-        """Deploy a Model/id, or upload a path with name/classes/input_spec first."""
+        """Deploy a Model/id, a registry name ('thothcraft/radar-occupancy-v2'),
+        or upload a local .pt path (with name/classes/input_spec) first."""
         from .client import Client
         from .models import Model
         client = Client(self._http.base_url)
         client._http = self._http
         if isinstance(model_or_path, (str, Path)):
-            model = client.upload_model(model_or_path, **upload_options)
+            if Path(model_or_path).exists():
+                model = client.upload_model(model_or_path, **upload_options)
+            else:
+                model = client.resolve_model(str(model_or_path))
             model_id = model.id
         else:
             model_id = model_or_path.id if isinstance(model_or_path, Model) else int(model_or_path)
         deployment = client.deploy_model(model_id, self.uuid, config)
         return deployment.wait(timeout) if wait else deployment
+
+    # -- placement ---------------------------------------------------------
+    def place(self, space, *, x: float = 0.0, y: float = 0.0,
+              rotation_deg: float = 0.0, fov_deg: float = 90.0,
+              range_m: float = 8.0) -> dict:
+        """Position this device inside a Space (plan coordinates, meters)."""
+        space_id = space.id if hasattr(space, "id") else int(space)
+        payload = self._http.put_json(
+            f"/api/spaces/devices/{self.uuid}/placement",
+            {"space_id": space_id, "x": x, "y": y,
+             "rotation_deg": rotation_deg, "fov_deg": fov_deg,
+             "range_m": range_m})
+        return payload.get("placement") or payload
+
+    def unplace(self) -> dict:
+        return self._http.delete(f"/api/spaces/devices/{self.uuid}/placement")
 
     # -- data ------------------------------------------------------------
     def files(self) -> list:
