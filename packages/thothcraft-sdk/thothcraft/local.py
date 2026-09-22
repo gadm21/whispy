@@ -75,6 +75,19 @@ class LocalDevice:
     def radar_live(self) -> Dict[str, Any]:
         return self._http.get_json("/api/radar/live")
 
+    def radar_snr(self) -> Dict[str, Any]:
+        """Current detection SNR: ``{"snr_db", "threshold_db", "detected"}``.
+
+        Values are None when the radar hasn't produced a frame yet."""
+        state = self.radar_live()
+        det = ((state.get("intensity") or {}).get("example2_xy") or {}).get("detection") or {}
+        return {
+            "snr_db": det.get("snr_db"),
+            "threshold_db": det.get("threshold_db", state.get("threshold_db")),
+            "detected": bool(state.get("person_detected")),
+            "stale": bool(state.get("stale")),
+        }
+
     # -- captures -----------------------------------------------------------
     def captures(self) -> List[Dict[str, Any]]:
         payload = self._http.get_json("/api/captures")
