@@ -545,3 +545,7 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="device.json path")
     args = parser.parse_args()
     raise SystemExit(run(args.config))
+
+
+if __name__ == "__main__":
+    main()
