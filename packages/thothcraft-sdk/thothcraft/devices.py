@@ -20,6 +20,20 @@ class Device:
         self.name = info.get("device_name") or info.get("name") or self.uuid
         self.online = bool(info.get("online") or info.get("is_online"))
 
+    @property
+    def hostname(self) -> str | None:
+        """mDNS hostname advertised by the node, e.g. ``thoth-denver.local``."""
+        hw = self.info.get("hardware_info") or {}
+        if isinstance(hw, dict):
+            return hw.get("hostname") or hw.get("device_hostname")
+        return None
+
+    @property
+    def dashboard_url(self) -> str:
+        """Direct URL of the node's local dashboard/API (port 5000)."""
+        host = self.hostname or self.info.get("ip_address") or self.name
+        return f"http://{host}:5000"
+
     # -- control ---------------------------------------------------------
     def command(self, command: str, payload: Optional[dict] = None) -> dict:
         return self._http.post_json(

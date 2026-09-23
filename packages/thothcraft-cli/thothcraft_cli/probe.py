@@ -60,31 +60,73 @@ def _has_bluetooth() -> tuple:
     return True, "Bluetooth available"
 
 
+# USB vendor IDs of the UART bridges used on ESP32 dev boards.
+_ESP32_VIDS = {"10C4", "1A86", "0403", "303A", "067B"}
+# Strong identity hints — an explicit Espressif/ESP32 string alone is enough.
+_ESP32_STRONG = ("esp32", "espressif", "usb jtag", "usb-serial converter")
+# Bridge-chip hints — only trusted together with a matching vendor ID, so a
+# generic "USB Serial Port" adapter is never reported as a CSI receiver.
+_ESP32_BRIDGE = ("cp210", "ch340", "ch341", "ch343", "wch", "silicon labs",
+                 "ftdi", "ft232", "pl2303", "uart bridge", "usb to uart")
+
+
 def _esp32_receivers() -> List[str]:
-    """USB-serial ports that may carry ESP32 CSI receivers."""
-    ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
-    if platform.system() == "Darwin":
-        ports = glob.glob("/dev/cu.usbserial*") + glob.glob("/dev/cu.usbmodem*")
+    """USB-serial ports that carry genuine ESP32 CSI receivers (excludes Bluetooth)."""
+    valid_ports = []
     if platform.system() == "Windows":
         try:
             import serial.tools.list_ports  # type: ignore
-            ports = [p.device for p in serial.tools.list_ports.comports()]
+            for p in serial.tools.list_ports.comports():
+                hwid = (p.hwid or "").upper()
+                desc = (p.description or "").lower()
+                # Exclude virtual Bluetooth serial ports
+                if "BTHENUM" in hwid or "bluetooth" in desc:
+                    continue
+                strong = any(k in desc or k in hwid.lower() for k in _ESP32_STRONG)
+                bridged = (any(v in hwid for v in _ESP32_VIDS)
+                           and any(k in desc for k in _ESP32_BRIDGE))
+                if strong or bridged:
+                    valid_ports.append(p.device)
         except ImportError:
-            ports = []
-    return ports
+            pass
+    elif platform.system() == "Darwin":
+        ports = glob.glob("/dev/cu.usbserial*") + glob.glob("/dev/cu.usbmodem*")
+        valid_ports.extend(ports)
+    else:
+        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+        valid_ports.extend(ports)
+    return valid_ports
 
 
 def _has_radar() -> tuple:
-    """Dedicated radar modules attach over serial/USB — same probe."""
-    ports = _esp32_receivers()
-    return (bool(ports), f"possible on {', '.join(ports)}" if ports else "unavailable")
+    """Detect mmWave radar (Infineon BGT60TR13C via SPI or USB)."""
+    # Check Linux SPI bus for MMW-HAT
+    if glob.glob("/dev/spidev*"):
+        return True, "SPI radar interface (/dev/spidev*)"
+    # Check USB-attached radar devices — require an explicit radar/chip
+    # identifier so generic serial adapters never report as radar.
+    radar_keywords = ("bgt60", "radar", "infineon", "xensiv", "mmwave",
+                      "iwr", "awr", "xethru")
+    if platform.system() == "Windows":
+        try:
+            import serial.tools.list_ports  # type: ignore
+            for p in serial.tools.list_ports.comports():
+                hwid = (p.hwid or "").upper()
+                desc = (p.description or "").lower()
+                if "BTHENUM" in hwid or "bluetooth" in desc:
+                    continue
+                if any(k in desc or k in hwid.lower() for k in radar_keywords):
+                    return True, f"Radar detected on {p.device} ({p.description})"
+        except ImportError:
+            pass
+    return False, "unavailable — no mmWave radar hardware detected"
 
 
 def _has_csi() -> tuple:
     ports = _esp32_receivers()
     if ports:
-        return True, f"ESP32 receiver possible on {', '.join(ports)}"
-    return False, "unsupported — needs ESP32 receiver or compatible NIC"
+        return True, f"ESP32 receiver on {', '.join(ports)}"
+    return False, "unavailable — no ESP32 receiver connected"
 
 
 def _has_accel() -> tuple:

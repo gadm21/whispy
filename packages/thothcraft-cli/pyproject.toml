@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "click>=8.1",
     "thothcraft-sdk>=0.1.0",
+    "zeroconf>=0.131",  # mDNS: advertise thoth-<name>.local on the LAN
 ]
 
 [project.optional-dependencies]

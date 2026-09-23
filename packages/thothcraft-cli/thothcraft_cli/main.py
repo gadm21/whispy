@@ -68,7 +68,17 @@ def whoami():
     """Show the authenticated account and plan."""
     client = _client()
     ent = client.entitlements()
-    click.echo(json.dumps(ent, indent=2))
+    user = ent.get("user") or {}
+    if user:
+        click.echo(f"Account:  {user.get('username') or ''} "
+                   f"{('<' + user['email'] + '>') if user.get('email') else ''}".rstrip())
+    click.echo(f"Backend:  {client._http.base_url}")
+    click.echo(f"Plan:     {ent.get('plan')}")
+    stripe = ent.get("stripe") or {}
+    if stripe.get("subscription_id"):
+        click.echo(f"Stripe:   {stripe['subscription_id']} "
+                   f"(expires {stripe.get('plan_expires_at') or 'n/a'})")
+    click.echo(json.dumps(ent.get("entitlements", {}), indent=2))
 
 
 # ── devices ───────────────────────────────────────────────────────────────────
@@ -87,7 +97,9 @@ def devices_list(as_json):
         return
     for d in devices:
         state = "●" if d.online else "○"
-        click.echo(f"{state} {d.name}  ({d.uuid})")
+        host = d.hostname or ""
+        suffix = f"  {d.dashboard_url}" if host else ""
+        click.echo(f"{state} {d.name}  ({d.uuid}){suffix}")
 
 
 # ── pairing ───────────────────────────────────────────────────────────────────
@@ -171,7 +183,15 @@ def status():
         click.echo(f"Storage:   {usage.get('used_bytes', 0) / 1024**2:.0f} MB "
                    f"(retention: {usage.get('minute_retention')} minutes)")
     if DEVICE_FILE.exists():
-        click.echo(f"This node: {json.loads(DEVICE_FILE.read_text()).get('device_name', 'paired')}")
+        dev = json.loads(DEVICE_FILE.read_text())
+        click.echo(f"This node: {dev.get('device_name', 'paired')}")
+        try:
+            from .daemon import _device_hostname, LOCAL_API_PORT
+            hostname = _device_hostname(dev.get("device_uuid", ""))
+            click.echo(f"Hostname:  {hostname}")
+            click.echo(f"Dashboard: http://{hostname}:{LOCAL_API_PORT}")
+        except Exception:
+            pass
     else:
         click.echo("This node: not paired — run `thothcraft pair`")
 
@@ -194,6 +214,19 @@ def doctor():
     except Exception:
         ok = False
     click.echo(f"  Brain ({url}): {'✓ reachable' if ok else '✗ unreachable'}")
+    # node identity / mDNS
+    try:
+        from .daemon import _device_hostname, _device_uuid, LOCAL_API_PORT
+        hostname = _device_hostname(_device_uuid())
+        click.echo(f"  Hostname:        {hostname}  (dashboard http://{hostname}:{LOCAL_API_PORT})")
+        try:
+            import zeroconf  # noqa: F401
+            click.echo("  mDNS (zeroconf): ✓ installed — hostname is advertised while the daemon runs")
+        except ImportError:
+            click.echo("  mDNS (zeroconf): ✗ not installed — `pip install zeroconf` so "
+                       f"{hostname} resolves on the LAN")
+    except Exception:
+        pass
     # sensors
     click.echo("\n  Sensors:")
     for name, (avail, detail) in probe.scan().items():
@@ -652,6 +685,21 @@ def device_restart():
     ctx = click.get_current_context()
     ctx.invoke(device_stop)
     ctx.invoke(device_start)
+
+
+@device.command("info")
+def device_info():
+    """Show this node's name, mDNS hostname and dashboard URL."""
+    from .daemon import _device_hostname, _device_uuid, LOCAL_API_PORT
+    uuid_str = _device_uuid()
+    hostname = _device_hostname(uuid_str)
+    dev = json.loads(DEVICE_FILE.read_text()) if DEVICE_FILE.exists() else {}
+    click.echo(f"Name:      {dev.get('device_name') or hostname.replace('.local', '')}")
+    click.echo(f"UUID:      {uuid_str}")
+    click.echo(f"Hostname:  {hostname}")
+    click.echo(f"Dashboard: http://{hostname}:{LOCAL_API_PORT}")
+    click.echo(f"           http://localhost:{LOCAL_API_PORT}")
+    click.echo(f"Paired:    {'yes' if dev.get('device_token') else 'no — run `thothcraft pair`'}")
 
 
 @device.command("logs")

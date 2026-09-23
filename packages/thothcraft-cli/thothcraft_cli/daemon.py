@@ -762,6 +762,60 @@ def _serve_local_api(device_uuid: str, port: int) -> ThreadingHTTPServer | None:
     return server
 
 
+# ── mDNS advertisement ---------------------------------------------------------
+
+def _primary_ipv4() -> str:
+    """Best-effort primary LAN IPv4 for the mDNS A record."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))  # no traffic is actually sent
+            return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def _start_mdns(device_uuid: str, hostname: str, port: int):
+    """Advertise ``thoth-<name>.local`` on the LAN via mDNS/Zeroconf.
+
+    Publishes an A record (hostname → LAN IP) plus a ``_thoth._tcp.local.``
+    service pointing at the local API port, so terminals and browsers resolve
+    http://thoth-<name>.local:5000 with zero configuration. Returns the
+    Zeroconf instance (caller must close it) or None when unavailable.
+    """
+    if not port:
+        return None
+    try:
+        from zeroconf import IPVersion, ServiceInfo, Zeroconf  # type: ignore
+    except ImportError:
+        print(f"[thothcraft] zeroconf not installed — {hostname} will not "
+              "resolve on the LAN (pip install zeroconf)", file=sys.stderr)
+        return None
+    try:
+        host = hostname if hostname.endswith(".local") else f"{hostname}.local"
+        short = host[:-len(".local")]
+        ip = _primary_ipv4()
+        info = ServiceInfo(
+            "_thoth._tcp.local.",
+            f"{short}._thoth._tcp.local.",
+            addresses=[socket.inet_aton(ip)],
+            port=port,
+            properties={
+                "uuid": device_uuid,
+                "daemon": "thothcraftd",
+                "dashboard": f"http://{host}:{port}",
+            },
+            server=f"{host}.",
+        )
+        zc = Zeroconf(ip_version=IPVersion.V4Only)
+        zc.register_service(info)
+        print(f"[thothcraft] mDNS: {host} -> {ip} "
+              f"(dashboard http://{host}:{port})")
+        return zc
+    except Exception as exc:
+        print(f"[thothcraft] mDNS advertisement failed: {exc}", file=sys.stderr)
+        return None
+
+
 def run(config_path: str = None) -> int:
     """Main daemon loop: local API → register → heartbeat → sync → commands."""
     from thothcraft.client import Client, DEFAULT_BASE_URL
@@ -769,16 +823,22 @@ def run(config_path: str = None) -> int:
 
     device_uuid = _device_uuid()
     hostname = _device_hostname(device_uuid)
-    server = _serve_local_api(device_uuid, LOCAL_API_PORT)
     token = _load_device_token()
     if not token:
-        print(f"[thothcraft] No device credential — local API only at http://{hostname}:{LOCAL_API_PORT}; "
-              "run `thothcraft pair` to link Brain",
+        # Fail fast before binding ports: the daemon's job is Brain sync, so
+        # an unpaired node exits with guidance instead of idling forever.
+        print("[thothcraft] No device credential — run `thothcraft pair` to link "
+              "this node to your account, then start the daemon again.",
               file=sys.stderr)
+        return 2
+    server = _serve_local_api(device_uuid, LOCAL_API_PORT)
+    zc = _start_mdns(device_uuid, hostname, LOCAL_API_PORT if server else 0)
 
     base_url = Client.load_base_url() or DEFAULT_BASE_URL
     client = Client(base_url, token=token) if token else None
-    capabilities = {k: v[0] for k, v in probe.scan().items()}
+    # Keyed capability map (usb_camera, radar, esp32_csi, ...) — Brain stores
+    # it in hardware_info so the portal shows real sensor state.
+    capabilities = {item["key"]: item["online"] for item in _sensor_inventory()}
 
     print(f"[thothcraft] device={device_uuid} ({hostname}) brain={base_url}")
     print(f"[thothcraft] capabilities: {capabilities}")
@@ -815,6 +875,8 @@ def run(config_path: str = None) -> int:
                     "daemon": "thothcraft",
                 })
                 deployments = hb_res.get("pending_deployments") if isinstance(hb_res, dict) else None
+                if deployments is None and isinstance(hb_res, dict):
+                    deployments = (hb_res.get("data") or {}).get("pending_deployments")
                 if isinstance(deployments, list):
                     for dep in deployments:
                         try:
@@ -831,6 +893,12 @@ def run(config_path: str = None) -> int:
                 print(f"[thothcraft] heartbeat failed: {e}", file=sys.stderr)
         time.sleep(HEARTBEAT_SECONDS)
 
+    if zc is not None:
+        try:
+            zc.unregister_all_services()
+            zc.close()
+        except Exception:
+            pass
     if server is not None:
         server.shutdown()
     print("[thothcraft] stopped")

@@ -20,7 +20,7 @@ from .errors import APIError, AuthError, EntitlementError, NotFoundError
 
 DEFAULT_BASE_URL = os.getenv(
     "THOTHCRAFT_API_URL",
-    "https://web-production-d7d37.up.railway.app")
+    "https://api.thothcraft.com")
 _CREDENTIALS_PATH = os.path.expanduser(
     os.getenv("THOTHCRAFT_CREDENTIALS", "~/.thothcraft/credentials.json")
 )
@@ -210,9 +210,16 @@ class Client:
         return self._http.get_json("/api/storage/usage")
 
     # -- devices / minutes -------------------------------------------------
-    def devices(self) -> list:
+    def devices(self, include_offline: bool = True) -> list:
+        """All paired devices — online and offline.
+
+        ``/api/device/list`` defaults to online-only; the CLI and SDK callers
+        expect the full fleet, so ``include_offline`` defaults to True here.
+        """
         from .devices import Device
-        payload = self._http.get_json("/api/device/list")
+        payload = self._http.get_json(
+            "/api/device/list",
+            {"include_offline": "true"} if include_offline else None)
         items = payload.get("devices") or payload.get("data") or []
         return [Device(self._http, d) for d in items]
 
