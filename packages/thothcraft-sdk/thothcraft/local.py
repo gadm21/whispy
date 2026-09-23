@@ -232,6 +232,24 @@ class LocalDevice:
             "model_name": model_name,
         })
 
+    def models(self) -> List[Dict[str, Any]]:
+        """List models deployed on this node."""
+        res = self._http.get_json("/api/models")
+        return res.get("models") or []
+
+    def deploy_rule_model(self, model_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Deploy or register a rule-based sensor model on this node."""
+        return self._http.post_json("/api/models", model_config)
+
+    def predictions(self) -> List[Dict[str, Any]]:
+        """Recent predictions emitted on this node."""
+        res = self._http.get_json("/api/predictions")
+        return res.get("predictions") or []
+
+    def run_inference(self) -> Dict[str, Any]:
+        """Evaluate deployed model(s) on current sensor readings."""
+        return self._http.post_json("/api/models/predict", {})
+
     def __repr__(self) -> str:
         return f"LocalDevice({self.host})"
 

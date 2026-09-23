@@ -29,6 +29,10 @@ HEARTBEAT_SECONDS = int(os.getenv("THOTHCRAFT_HEARTBEAT_SECONDS", "30"))
 LOCAL_API_PORT = int(os.getenv("THOTHCRAFTD_PORT", "5000"))
 CAMERA_FPS = float(os.getenv("THOTHCRAFTD_CAMERA_FPS", "5"))
 
+_ACTIVE_MODELS: dict[str, Any] = {}
+_RECENT_PREDICTIONS: list[dict[str, Any]] = []
+_MODELS_LOCK = threading.Lock()
+
 
 def _device_uuid() -> str:
     """Stable per-machine device UUID, persisted locally."""
@@ -130,6 +134,60 @@ def _sensor_inventory() -> list[dict]:
     ]
 
 
+def _register_model(model_config: dict[str, Any]) -> dict[str, Any]:
+    """Register and instantiate a rule model with attached actuator."""
+    from thothcraft.processors.base import RuleProcessor, ProcessorMeta
+    model_id = str(model_config.get("id") or model_config.get("deployment_id") or uuid.uuid4())
+    rule_config = model_config.get("rule_config") or model_config
+    name = str(model_config.get("model_name") or model_config.get("name") or "rule-model")
+    sensor = str(model_config.get("sensor") or rule_config.get("sensor") or "camera")
+    meta = ProcessorMeta(
+        name=name,
+        processor_type="rule",
+        sensor=sensor,
+        task=str(model_config.get("task") or "classification"),
+    )
+    processor = RuleProcessor(rule_config, meta=meta)
+    with _MODELS_LOCK:
+        _ACTIVE_MODELS[model_id] = processor
+    print(f"[thothcraftd] registered model {name} ({model_id}) on sensor '{sensor}'")
+    return {"id": model_id, "name": name, "sensor": sensor, "status": "active"}
+
+
+def _run_single_inference(processor: Any) -> dict[str, Any]:
+    """Run model on current sensor input and record prediction."""
+    from thothcraft.processors.base import SensorWindow
+    sensor = processor.metadata().sensor
+    window_data: dict[str, Any] = {}
+
+    if sensor in ("camera", "video", "usb_camera"):
+        _CAMERA.ensure_started()
+        frame = _CAMERA.frame()
+        if frame:
+            window_data["camera"] = frame
+    else:
+        # Include probed system metrics
+        for item in _sensor_inventory():
+            window_data[item["key"]] = 1.0 if item["online"] else 0.0
+
+    window = SensorWindow(window_data)
+    prediction = processor.predict(window)
+    res = {
+        "model_name": processor.metadata().name,
+        "sensor": sensor,
+        "label": prediction.label,
+        "confidence": prediction.confidence,
+        "people_count": prediction.people_count,
+        "extras": prediction.extras,
+        "timestamp": time.time(),
+    }
+    with _MODELS_LOCK:
+        _RECENT_PREDICTIONS.append(res)
+        if len(_RECENT_PREDICTIONS) > 100:
+            _RECENT_PREDICTIONS.pop(0)
+    return res
+
+
 def _make_handler(device_uuid: str):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes,
@@ -154,6 +212,23 @@ def _make_handler(device_uuid: str):
             elif path == "/api/settings":
                 self._json({"device_id": device_uuid, "daemon": "thothcraftd",
                             "capabilities": _sensor_inventory()})
+            elif path == "/api/models":
+                with _MODELS_LOCK:
+                    models_list = [
+                        {
+                            "id": mid,
+                            "name": p.metadata().name,
+                            "sensor": p.metadata().sensor,
+                            "processor_type": p.metadata().processor_type,
+                            "task": p.metadata().task,
+                        }
+                        for mid, p in _ACTIVE_MODELS.items()
+                    ]
+                self._json({"models": models_list})
+            elif path == "/api/predictions":
+                with _MODELS_LOCK:
+                    preds = list(_RECENT_PREDICTIONS)
+                self._json({"predictions": preds})
             elif path == "/api/captures/live/video/frame":
                 _CAMERA.ensure_started()
                 deadline = time.monotonic() + 8
@@ -172,8 +247,35 @@ def _make_handler(device_uuid: str):
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                body = {}
+
             if path == "/api/live/session":
                 self._json({"success": True})
+            elif path == "/api/models":
+                res = _register_model(body)
+                self._json({"success": True, "model": res})
+            elif path in ("/api/models/predict", "/api/predict"):
+                with _MODELS_LOCK:
+                    models = list(_ACTIVE_MODELS.values())
+                results = [_run_single_inference(m) for m in models]
+                self._json({"success": True, "results": results})
+            elif path == "/api/internal/prediction":
+                # Manual prediction injection
+                label = body.get("label", "occupied")
+                conf = float(body.get("confidence", 1.0))
+                with _MODELS_LOCK:
+                    _RECENT_PREDICTIONS.append({
+                        "model_name": body.get("model_name", "injected"),
+                        "label": label,
+                        "confidence": conf,
+                        "timestamp": time.time(),
+                    })
+                self._json({"success": True, "injected": label})
             else:
                 self._json({"error": "not found"}, code=404)
 
@@ -227,17 +329,42 @@ def run(config_path: str = None) -> int:
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
 
+    def _inference_worker():
+        while not stop:
+            with _MODELS_LOCK:
+                models = list(_ACTIVE_MODELS.values())
+            for model in models:
+                try:
+                    _run_single_inference(model)
+                except Exception as exc:
+                    pass
+            time.sleep(2.0)
+
+    threading.Thread(target=_inference_worker, name="thothcraftd-inference", daemon=True).start()
+
     while not stop:
         if client is not None:
             try:
-                client._http.post_json("/api/device/heartbeat", body={
+                hb_res = client._http.post_json("/api/device/heartbeat", body={
                     "device_id": device_uuid,
                     "capabilities": capabilities,
                     "daemon": "thothcraftd",
                 })
+                deployments = hb_res.get("pending_deployments") if isinstance(hb_res, dict) else None
+                if isinstance(deployments, list):
+                    for dep in deployments:
+                        try:
+                            _register_model(dep)
+                            dep_id = dep.get("deployment_id")
+                            if dep_id:
+                                client._http.post_json(
+                                    f"/api/datasets/models/deployments/{dep_id}/confirm",
+                                    body={"status": "delivered"},
+                                )
+                        except Exception as e:
+                            print(f"[thothcraftd] deployment failed: {e}", file=sys.stderr)
             except Exception as e:
                 print(f"[thothcraftd] heartbeat failed: {e}", file=sys.stderr)
-        # TODO: collection, local storage, prediction, sync, command poll
         time.sleep(HEARTBEAT_SECONDS)
 
     if server is not None:

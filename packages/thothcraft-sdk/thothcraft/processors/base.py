@@ -15,6 +15,7 @@ spatial-state engine and ROS2 bridge consume.
 
 from __future__ import annotations
 
+import logging
 import operator
 import re
 from abc import ABC, abstractmethod
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, Mapping, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 PROCESSOR_TYPES = ("rule", "classical", "torchscript", "fusion")
 
@@ -115,8 +118,16 @@ class SensorWindow:
 
         Supported: ``<sensor>_mean``, ``<sensor>_std``, ``<sensor>_max``,
         ``<sensor>_min``, ``<sensor>_energy`` (mean of squares),
-        ``snr_mean`` (radar SNR column mean when present).
+        ``snr_mean`` (radar SNR column mean when present), and direct scalar
+        fields like ``temperature_c``, ``pressure_mbar``, ``snr_db``, etc.
         """
+        # Direct scalar in sensors mapping
+        if name in self._sensors and isinstance(self._sensors[name], (int, float)):
+            return float(self._sensors[name])
+        # Check subdictionaries in sensors
+        for s_val in self._sensors.values():
+            if isinstance(s_val, dict) and name in s_val and isinstance(s_val[name], (int, float)):
+                return float(s_val[name])
         if name == "snr_mean":
             for key in ("radar_snr", "snr", "radar"):
                 if key in self._sensors:
@@ -166,23 +177,17 @@ _EXPR_RE = re.compile(
 
 
 class RuleProcessor(Processor):
-    """Declarative threshold processor — the simplest deployable model.
+    """Declarative threshold and rule processor — supports sensor thresholds,
 
-    Config example::
-
-        {
-          "rules": [{"when": "snr_mean > snr_threshold", "label": "occupied"}],
-          "else": "empty",
-          "params": {"snr_threshold": 12.0}
-        }
-
-    ``params`` are defaults; per-device ``configure()`` overrides them.
+    computer-vision face detection, and downstream actuator triggering.
     """
 
     def __init__(self, config: Dict[str, Any], meta: Optional[ProcessorMeta] = None):
+        self._config = config
         self._rules = config.get("rules") or []
         self._else = config.get("else", "unknown")
         self._params = dict(config.get("params") or {})
+        self.rule_type = str(config.get("rule_type") or ("face_detection" if config.get("sensor") == "camera" else "threshold"))
         self._meta = meta or ProcessorMeta(
             name=config.get("name", "rule-processor"),
             processor_type="rule",
@@ -190,6 +195,14 @@ class RuleProcessor(Processor):
             task=config.get("task", "occupancy"),
             config_schema=config.get("config_schema") or {},
         )
+        self._face_cascade = None
+        self._actuator = None
+        if config.get("actuator"):
+            try:
+                from ..actuators import create_actuator
+                self._actuator = create_actuator(config["actuator"])
+            except Exception as exc:
+                logger.warning("Could not initialize actuator: %s", exc)
 
     def metadata(self) -> ProcessorMeta:
         return self._meta
@@ -198,34 +211,129 @@ class RuleProcessor(Processor):
         params = config.get("params", config)
         if isinstance(params, dict):
             self._params.update(params)
+        if config.get("actuator"):
+            try:
+                from ..actuators import create_actuator
+                self._actuator = create_actuator(config["actuator"])
+            except Exception as exc:
+                logger.warning("Could not update actuator: %s", exc)
 
     def _resolve(self, token: str, window: SensorWindow) -> float:
-        if token in self._params:
-            return float(self._params[token])
-        return window.feature(token)
+        try:
+            return window.feature(token)
+        except KeyError:
+            if token in self._params:
+                return float(self._params[token])
+            raise
+
+    def _get_face_cascade(self):
+        if self._face_cascade is None:
+            try:
+                import cv2  # type: ignore
+                if hasattr(cv2, "CascadeClassifier") and hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+                    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                    self._face_cascade = cv2.CascadeClassifier(cascade_path)
+            except Exception as exc:
+                logger.warning("OpenCV face cascade unavailable: %s", exc)
+        return self._face_cascade
+
+    def _predict_face(self, window: SensorWindow) -> Prediction:
+        """Run OpenCV face detection on camera frame."""
+        frame_data = None
+        for k in ("camera", "video", "frame"):
+            if k in window:
+                frame_data = window._sensors[k]
+                break
+        if frame_data is None:
+            return Prediction(label=self._else, confidence=0.0, extras={"error": "no camera frame"})
+
+        try:
+            import cv2  # type: ignore
+        except ImportError:
+            return Prediction(label=self._else, confidence=0.0, extras={"error": "opencv not installed"})
+
+        # Decode JPEG bytes or use numpy array
+        if isinstance(frame_data, bytes):
+            nparr = np.frombuffer(frame_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        elif hasattr(frame_data, "shape"):
+            img = np.asarray(frame_data)
+        else:
+            return Prediction(label=self._else, confidence=0.0, extras={"error": "unsupported frame format"})
+
+        if img is None:
+            return Prediction(label=self._else, confidence=0.0, extras={"error": "failed to decode frame"})
+
+        cascade = self._get_face_cascade()
+        boxes = []
+        if cascade is not None:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+            if len(faces) > 0:
+                boxes = [[int(x), int(y), int(w), int(h)] for (x, y, w, h) in faces]
+        else:
+            # Fallback: YCrCb skin-color & facial contour heuristic for environments without cascade binaries
+            if len(img.shape) == 3 and img.shape[2] == 3:
+                ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+                mask = cv2.inRange(ycrcb, np.array([0, 133, 77], dtype=np.uint8),
+                                   np.array([255, 173, 127], dtype=np.uint8))
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for cnt in contours:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    if w * h > 1200 and 0.65 <= (h / max(1, w)) <= 1.8:
+                        boxes.append([int(x), int(y), int(w), int(h)])
+
+        has_face = len(boxes) > 0
+        pos_label = "face_detected"
+        if self._rules:
+            pos_label = self._rules[0].get("label", "face_detected")
+
+        if has_face:
+            return Prediction(
+                label=pos_label,
+                confidence=0.95,
+                people_count=len(boxes),
+                extras={"faces_count": len(boxes), "bounding_boxes": boxes},
+            )
+        return Prediction(label=self._else, confidence=1.0, people_count=0)
 
     def predict(self, window: SensorWindow) -> Prediction:
-        for rule in self._rules:
-            expr = rule.get("when", "")
-            m = _EXPR_RE.match(expr)
-            if not m:
-                continue
-            lhs, op, rhs = m.groups()
-            try:
-                left = self._resolve(lhs, window)
-            except KeyError:
-                continue
-            try:
-                right = float(rhs)
-            except ValueError:
+        if self.rule_type in ("face_detection", "cv_face") or any(r.get("rule_type") == "face_detection" for r in self._rules):
+            pred = self._predict_face(window)
+        else:
+            pred = None
+            for rule in self._rules:
+                expr = rule.get("when", "")
+                m = _EXPR_RE.match(expr)
+                if not m:
+                    continue
+                lhs, op, rhs = m.groups()
                 try:
-                    right = self._resolve(rhs, window)
+                    left = self._resolve(lhs, window)
                 except KeyError:
                     continue
-            if _OPS[op](left, right):
-                return Prediction(
-                    label=rule.get("label", "positive"),
-                    confidence=float(rule.get("confidence", 1.0)),
-                    extras={"rule": expr, "value": left},
-                )
-        return Prediction(label=self._else, confidence=1.0)
+                try:
+                    right = float(rhs)
+                except ValueError:
+                    try:
+                        right = self._resolve(rhs, window)
+                    except KeyError:
+                        continue
+                if _OPS[op](left, right):
+                    pred = Prediction(
+                        label=rule.get("label", "positive"),
+                        confidence=float(rule.get("confidence", 1.0)),
+                        extras={"rule": expr, "value": left},
+                    )
+                    break
+            if pred is None:
+                pred = Prediction(label=self._else, confidence=1.0)
+
+        # Trigger attached actuator plugin if present
+        if self._actuator is not None:
+            try:
+                self._actuator.trigger(pred)
+            except Exception as exc:
+                logger.warning("Actuator trigger failed: %s", exc)
+
+        return pred

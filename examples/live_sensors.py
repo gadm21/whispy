@@ -104,7 +104,7 @@ def probe_node(host: str) -> None:
     hb = threading.Thread(target=_heartbeat, args=(node, stop), daemon=True)
     hb.start()
     try:
-        time.sleep(2.0)  # let the collector switch to live mode
+        time.sleep(8.0)  # let the collector switch to live mode + ffmpeg warmup
 
         if sensors.get("dreamhat_radar", {}).get("online") or \
                 sensors.get("dreamhat_radar", {}).get("ever_seen"):

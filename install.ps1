@@ -16,7 +16,9 @@ param(
     # Skip registering the background daemon task.
     [switch]$NoDaemon,
     # Skip sensor extras (opencv, pyserial, psutil).
-    [switch]$NoSensors
+    [switch]$NoSensors,
+    # Skip enabling OpenSSH server.
+    [switch]$NoSsh
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,7 +70,32 @@ else {
 }
 if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 
-# Locate the thothcraftd entry point (pip --user scripts may not be on PATH).
+function Enable-SshServer {
+    Write-Host "Ensuring OpenSSH Server is configured..." -ForegroundColor Cyan
+    try {
+        $sshd = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+        if (-not $sshd) {
+            Write-Host "Installing OpenSSH Server Windows capability..."
+            Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" -ErrorAction SilentlyContinue | Out-Null
+            $sshd = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+        }
+        if ($sshd) {
+            Set-Service -Name "sshd" -StartupType 'Automatic' -ErrorAction SilentlyContinue
+            Start-Service -Name "sshd" -ErrorAction SilentlyContinue
+            if (Get-Command "New-NetFirewallRule" -ErrorAction SilentlyContinue) {
+                if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
+                    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue | Out-Null
+                }
+            }
+            Write-Host "✓ OpenSSH Server (sshd) enabled and running" -ForegroundColor Green
+        } else {
+            Write-Host "Note: OpenSSH Server could not be enabled automatically (run PowerShell as Administrator to enable sshd)." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Note: Could not enable OpenSSH Server ($($_.Exception.Message))." -ForegroundColor Yellow
+    }
+}
+
 $thothcraftd = Get-Command thothcraftd -ErrorAction SilentlyContinue
 if (-not $thothcraftd) {
     $userScripts = & $py -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"
@@ -91,6 +118,10 @@ if (-not $NoDaemon) {
         -Settings $settings -Description "ThothCraft device daemon (local sensor API + Brain heartbeat)" -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
     Write-Host "✓ thothcraftd registered as logon task '$taskName' and started" -ForegroundColor Green
+}
+
+if (-not $NoSsh) {
+    Enable-SshServer
 }
 
 Write-Host ""

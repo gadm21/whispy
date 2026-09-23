@@ -15,11 +15,13 @@ set -euo pipefail
 LOCAL=""
 NO_DAEMON=0
 NO_SENSORS=0
+NO_SSH=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --local) LOCAL="$2"; shift 2 ;;
         --no-daemon) NO_DAEMON=1; shift ;;
         --no-sensors) NO_SENSORS=1; shift ;;
+        --no-ssh) NO_SSH=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -110,6 +112,32 @@ EOF
         echo "✓ thothcraftd loaded as a LaunchAgent"
     else
         echo "No supported service manager — run 'thothcraftd' manually or via your init system."
+    fi
+fi
+
+if [ "$NO_SSH" -eq 0 ]; then
+    echo "Ensuring SSH server is enabled..."
+    if [ "$(uname -s)" = "Linux" ]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            if ! systemctl is-active --quiet ssh && ! systemctl is-active --quiet sshd; then
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update -y && sudo apt-get install -y openssh-server || true
+                elif command -v yum >/dev/null 2>&1; then
+                    sudo yum install -y openssh-server || true
+                elif command -v pacman >/dev/null 2>&1; then
+                    sudo pacman -S --noconfirm openssh || true
+                fi
+                sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || true
+            fi
+            if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
+                echo "✓ SSH server is enabled and active"
+            else
+                echo "Note: SSH server could not be started automatically. Run 'sudo systemctl enable --now ssh'."
+            fi
+        fi
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        sudo systemsetup -setremotelogin on 2>/dev/null || true
+        echo "✓ Remote Login (SSH) requested"
     fi
 fi
 
