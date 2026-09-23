@@ -125,8 +125,17 @@ def pair():
     })
     code = resp.get("code")
     secret = resp.get("pairing_secret")
-    click.echo(f"\nPairing code:\n\n        THOTH-{code}\n")
-    click.echo("Open: https://hub.thothcraft.com/pair\n")
+
+    # Self-claim: the CLI already holds the account token, so bind the code to
+    # this user directly instead of sending them to a web page.
+    try:
+        client._http.post_json("/api/device/pairing/claim", body={"code": code})
+        click.echo("✓ Claimed this device on your account")
+    except Exception as exc:
+        # Fall back to manual claim (e.g. pairing under a different account).
+        click.echo(f"\nPairing code:\n\n        THOTH-{code}\n")
+        click.echo("Claim it from the portal Devices page, or run "
+                   f"`thothcraft pair` on a logged-in machine. ({exc})\n")
     click.echo("Waiting...")
 
     deadline = time.time() + 600
@@ -690,16 +699,21 @@ def device_restart():
 @device.command("info")
 def device_info():
     """Show this node's name, mDNS hostname and dashboard URL."""
-    from .daemon import _device_hostname, _device_uuid, LOCAL_API_PORT
+    from .daemon import _device_hostname, _device_uuid, _lan_ip, LOCAL_API_PORT
     uuid_str = _device_uuid()
     hostname = _device_hostname(uuid_str)
+    lan_ip = _lan_ip()
     dev = json.loads(DEVICE_FILE.read_text()) if DEVICE_FILE.exists() else {}
     click.echo(f"Name:      {dev.get('device_name') or hostname.replace('.local', '')}")
     click.echo(f"UUID:      {uuid_str}")
     click.echo(f"Hostname:  {hostname}")
     click.echo(f"Dashboard: http://{hostname}:{LOCAL_API_PORT}")
+    if lan_ip:
+        click.echo(f"           http://{lan_ip}:{LOCAL_API_PORT}   (IP fallback if .local fails)")
     click.echo(f"           http://localhost:{LOCAL_API_PORT}")
     click.echo(f"Paired:    {'yes' if dev.get('device_token') else 'no — run `thothcraft pair`'}")
+    if lan_ip:
+        click.echo(f"SSH:       ssh <user>@{hostname}   or   ssh <user>@{lan_ip}")
 
 
 @device.command("logs")

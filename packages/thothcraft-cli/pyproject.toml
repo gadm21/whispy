@@ -16,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sensors = ["psutil>=5.9", "opencv-python>=4.8", "pyserial>=3.5"]
+sensors = [
+    "psutil>=5.9",
+    "opencv-python>=4.8",
+    "pyserial>=3.5",
+    "sense-hat>=2.6; platform_system=='Linux'",  # Pi Sense HAT (sensors + joystick + LED matrix)
+]
 
 [project.scripts]
 thothcraft = "thothcraft_cli.main:main"

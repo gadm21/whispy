@@ -161,6 +161,73 @@ class _Camera:
 _CAMERA = _Camera()
 
 
+# ── Sense HAT ------------------------------------------------------------------
+
+_SENSEHAT = None          # cached SenseHat instance (None = not tried / absent)
+_SENSEHAT_ERR: str | None = None
+_SENSEHAT_SERIES: list[dict] = []   # trailing readings for the SDK `series` field
+
+
+def _sensehat():
+    """Return a SenseHat instance or raise RuntimeError with a readable reason.
+
+    Imported lazily so the daemon runs fine on machines without the HAT.
+    """
+    global _SENSEHAT, _SENSEHAT_ERR
+    if _SENSEHAT is not None:
+        return _SENSEHAT
+    try:
+        from sense_hat import SenseHat  # type: ignore
+    except Exception:
+        try:
+            from sense_emu import SenseHat  # type: ignore
+        except Exception:
+            _SENSEHAT_ERR = "sense-hat not installed (pip install sense-hat)"
+            raise RuntimeError(_SENSEHAT_ERR)
+    try:
+        _SENSEHAT = SenseHat()
+    except Exception as exc:
+        _SENSEHAT_ERR = f"Sense HAT not detected: {exc}"
+        raise RuntimeError(_SENSEHAT_ERR)
+    return _SENSEHAT
+
+
+def _sensehat_reading() -> dict:
+    s = _sensehat()
+    imu = s.get_orientation()  # pitch/roll/yaw degrees
+    accel = s.get_accelerometer_raw()
+    gyro = s.get_gyroscope_raw()
+    mag = s.get_compass_raw()
+    reading = {
+        "temperature_c": round(s.get_temperature(), 2),
+        "humidity_percent": round(s.get_humidity(), 2),
+        "pressure_mbar": round(s.get_pressure(), 2),
+        "orientation": {k: round(v, 2) for k, v in imu.items()},
+        "acceleration": {k: round(v, 4) for k, v in accel.items()},
+        "gyroscope": {k: round(v, 4) for k, v in gyro.items()},
+        "compass": {k: round(v, 4) for k, v in mag.items()},
+        "timestamp": time.time(),
+    }
+    _SENSEHAT_SERIES.append(reading)
+    del _SENSEHAT_SERIES[:-120]
+    return reading
+
+
+def _lan_ip() -> str | None:
+    """Primary LAN IPv4 for this node (used as a .local fallback)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return None
+
+
 # ── local API ------------------------------------------------------------------
 
 _SENSOR_KEYS = {
@@ -704,6 +771,27 @@ def _make_handler(device_uuid: str):
                                code=404)
                 else:
                     self._send(200, frame, "image/jpeg")
+            elif path == "/api/captures/live/sensehat":
+                try:
+                    self._json({"latest": _sensehat_reading(),
+                                "series": list(_SENSEHAT_SERIES)})
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, code=503)
+            elif path == "/api/sensehat/matrix":
+                try:
+                    self._json({"pixels": _sensehat().get_pixels()})
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, code=503)
+            elif path == "/api/sensehat/joystick":
+                try:
+                    events = [
+                        {"timestamp": e.timestamp, "direction": e.direction,
+                         "action": e.action}
+                        for e in _sensehat().stick.get_events()
+                    ]
+                    self._json({"events": events})
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, code=503)
             else:
                 self._json({"error": "not found"}, code=404)
 
@@ -738,6 +826,34 @@ def _make_handler(device_uuid: str):
                         "timestamp": time.time(),
                     })
                 self._json({"success": True, "injected": label})
+            elif path == "/api/sensehat/matrix":
+                try:
+                    s = _sensehat()
+                    if body.get("rotation") is not None:
+                        s.set_rotation(int(body["rotation"]))
+                    if body.get("low_light") is not None:
+                        s.low_light = bool(body["low_light"])
+                    if body.get("clear"):
+                        s.clear()
+                    if body.get("color") is not None:
+                        c = body["color"]
+                        s.clear(int(c[0]), int(c[1]), int(c[2]))
+                    if body.get("pixels") is not None:
+                        px = body["pixels"]
+                        if len(px) == 64 and all(isinstance(p, (list, tuple)) and len(p) == 3 for p in px):
+                            s.set_pixels([[int(v) for v in p] for p in px])
+                        else:  # sparse [x, y, r, g, b] tuples
+                            for p in px:
+                                s.set_pixel(int(p[0]), int(p[1]),
+                                            int(p[2]), int(p[3]), int(p[4]))
+                    if body.get("text"):
+                        s.show_message(str(body["text"]),
+                                       scroll_speed=float(body.get("speed") or 0.1))
+                    self._json({"success": True, "pixels": s.get_pixels()})
+                except RuntimeError as exc:
+                    self._json({"error": str(exc)}, code=503)
+                except Exception as exc:
+                    self._json({"error": f"matrix update failed: {exc}"}, code=400)
             else:
                 self._json({"error": "not found"}, code=404)
 
@@ -871,6 +987,7 @@ def run(config_path: str = None) -> int:
                 hb_res = client._http.post_json("/api/device/heartbeat", body={
                     "device_id": device_uuid,
                     "device_hostname": hostname,
+                    "ip_address": _lan_ip(),
                     "capabilities": capabilities,
                     "daemon": "thothcraft",
                 })
