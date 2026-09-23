@@ -42,6 +42,27 @@ def _flatten(samples: List[SensorSample]) -> List[float]:
     return out
 
 
+def resolve_sensor_id(window: SensorWindow, name: str) -> Optional[str]:
+    """Resolve a modality/sensor name to a concrete sensor id in a window.
+
+    Manifests and rules reference modalities like ``radar``; windows key
+    samples by sensor id like ``radar-0``. Resolution order: exact id,
+    ``<name>-*`` prefix, then a sample whose ``sensor_type`` matches.
+    Returns ``None`` when no sensor matches.
+    """
+    if name in window.samples or name in window.modalities:
+        return name
+    prefix = name + "-"
+    for sid in list(window.samples) + list(window.modalities):
+        if sid.startswith(prefix):
+            return sid
+    for sid, chunk in window.samples.items():
+        for s in chunk:
+            if s.sensor_type == name:
+                return sid
+    return None
+
+
 class WindowFeatures:
     """Derived scalar features over a SensorWindow.
 
@@ -84,11 +105,13 @@ class WindowFeatures:
             raise KeyError("no IMU/accelerometer sensor in window")
 
         m = self._STAT_RE.fullmatch(name)
-        if m and m.group(1) in self._window.samples:
-            vals = _flatten(self._window.samples[m.group(1)])
-            if not vals:
-                raise KeyError(f"no samples for feature: {name}")
-            return self._stat(vals, m.group(2))
+        if m:
+            key = resolve_sensor_id(self._window, m.group(1))
+            if key is not None:
+                vals = _flatten(self._window.samples.get(key) or [])
+                if not vals:
+                    raise KeyError(f"no samples for feature: {name}")
+                return self._stat(vals, m.group(2))
 
         raise KeyError(f"unknown feature: {name}")
 
@@ -130,4 +153,4 @@ class WindowFeatures:
         return math.sqrt(total / count) if count else 0.0
 
 
-__all__ = ["WindowFeatures"]
+__all__ = ["WindowFeatures", "resolve_sensor_id"]

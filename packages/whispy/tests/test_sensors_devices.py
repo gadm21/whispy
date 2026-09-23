@@ -52,6 +52,21 @@ def test_local_device_with_fixture():
         dev.close()
 
 
+def test_local_device_sensor_by_inventory_id():
+    """sensor() must accept the ids that sensors() itself returns."""
+    fixture = FixtureDriver()
+    dev = LocalDevice(device_id="test-dev", drivers={"fixture": fixture})
+    dev.open({"fixture": {"sensor_type": "radar", "payloads": [[1.0]]}})
+    try:
+        ids = [s.id for s in dev.sensors()]
+        assert ids, "expected at least one advertised sensor"
+        for sid in ids:
+            handle = dev.sensor(sid)          # must not raise KeyError
+            assert handle.info.id == sid
+    finally:
+        dev.close()
+
+
 def test_local_device_missing_sensor():
     dev = LocalDevice(device_id="test-dev", drivers={})
     with pytest.raises(KeyError):

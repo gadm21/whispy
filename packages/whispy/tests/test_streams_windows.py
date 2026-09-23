@@ -35,6 +35,33 @@ def test_stream_window_slice():
     assert [s.sequence for s in chunk] == [3, 4, 5, 6]
 
 
+def test_stream_subscriptions_are_non_destructive():
+    """Two consumers each get every sample; the shared buffer is untouched."""
+    stream = SampleStream(iter([]))
+    sub_a = stream.subscribe()
+    sub_b = stream.subscribe()
+    for i in range(3):
+        stream.put(_sample("radar-0", float(i), i, [i]))
+
+    # Each subscription sees all samples independently.
+    assert [s.sequence for s in sub_a.read()] == [0, 1, 2]
+    assert [s.sequence for s in sub_b.read()] == [0, 1, 2]
+    # Reading a subscription does not drain the shared buffer.
+    assert len(stream.snapshot()) == 3
+    # A second read returns only new samples.
+    stream.put(_sample("radar-0", 3.0, 3, [3]))
+    assert [s.sequence for s in sub_a.read()] == [3]
+
+
+def test_stream_subscription_starts_empty():
+    stream = SampleStream(iter([]))
+    stream.put(_sample("radar-0", 0.0, 0, [0]))
+    sub = stream.subscribe()          # created after a sample was buffered
+    assert sub.read() == []           # no replay of pre-subscription samples
+    stream.put(_sample("radar-0", 1.0, 1, [1]))
+    assert [s.sequence for s in sub.read()] == [1]
+
+
 def test_synchronizer_marks_missing_and_stale():
     radar = SampleStream(iter([]))
     now = time.time()

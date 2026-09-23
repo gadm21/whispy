@@ -76,6 +76,16 @@ def test_rule_invalid_expression_fails_at_deploy():
         RuleProcessor({"rules": [{"when": "snr_mean >> 12 !!"}]})
 
 
+def test_rule_incomplete_expression_fails_at_deploy():
+    """'x >' tokenizes fine but is not a valid expression — must raise."""
+    with pytest.raises(Exception):
+        RuleProcessor({"rules": [{"when": "x >", "label": "y"}]})
+    with pytest.raises(Exception):
+        RuleProcessor({"rules": [{"when": "(a > 1", "label": "y"}]})
+    with pytest.raises(Exception):
+        RuleProcessor({"rules": [{"when": "a > 1 b", "label": "y"}]})
+
+
 def test_rule_not_and_parens():
     proc = RuleProcessor({
         "rules": [{"when": "not (snr_mean > 12)", "label": "quiet"}],
@@ -115,6 +125,41 @@ def test_fusion_runs_when_complete():
 def test_fusion_invalid_on_missing():
     with pytest.raises(ValueError):
         FusionProcessor({"on_missing": "bogus"})
+
+
+def test_fusion_abstains_when_required_never_opened():
+    """A required modality with no marker AND no samples is unavailable."""
+    proc = FusionProcessor({
+        "inputs": [{"sensor": "radar"}, {"sensor": "env"}],
+        "rules": [{"when": "radar_mean > 0", "label": "occupied"}],
+        "else": "empty"})
+    # Only radar produced data; env never opened → no marker, no samples.
+    w = _window({"radar": [[1.0]]},
+                modalities={"radar": ModalityState(sensor_id="radar",
+                                                   state="ok")})
+    pred = proc.predict(w)
+    assert pred.label == "unknown"
+    assert "env" in pred.metadata["unavailable"]
+
+
+def test_fusion_resolves_modality_to_sensor_id():
+    """Manifest modality 'radar' resolves to sensor id 'radar-0'."""
+    proc = FusionProcessor({
+        "inputs": [{"sensor": "radar"}, {"sensor": "env"}],
+        "rules": [{"when": "radar_mean > 0", "label": "occupied"}],
+        "else": "empty"})
+    w = _window({"radar-0": [[1.0]], "env-0": [[22.0]]})
+    assert proc.predict(w).label == "occupied"
+
+
+def test_fusion_abstains_when_required_id_absent():
+    proc = FusionProcessor({
+        "inputs": [{"sensor": "radar"}, {"sensor": "env"}],
+        "rules": [{"when": "radar_mean > 0", "label": "occupied"}],
+        "else": "empty"})
+    # env-0 absent entirely → required 'env' unresolved → abstain.
+    w = _window({"radar-0": [[1.0]]})
+    assert proc.predict(w).label == "unknown"
 
 
 # -- TorchScriptProcessor -------------------------------------------------------

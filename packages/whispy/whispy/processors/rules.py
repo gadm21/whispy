@@ -183,7 +183,14 @@ class RuleProcessor(Processor):
     def _compile(expr: str) -> List[str]:
         if not expr or not isinstance(expr, str):
             raise _ExprError("rule 'when' must be a non-empty expression")
-        return _tokenize(expr)
+        tokens = _tokenize(expr)
+        # Parse the full grammar now so a malformed expression (``x >``,
+        # unbalanced parens, trailing tokens) fails at deploy time rather
+        # than silently falling through to the else label at inference.
+        # Identifiers resolve to a stub — feature names are only bound at
+        # inference, so the check is purely syntactic.
+        _Parser(tokens, lambda _name: 0.0).parse()
+        return tokens
 
     def _resolve(self, token: str, features: WindowFeatures) -> float:
         try:

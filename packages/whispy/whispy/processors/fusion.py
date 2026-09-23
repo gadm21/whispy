@@ -56,9 +56,25 @@ class FusionProcessor(Processor):
     def metadata(self) -> ProcessorMeta:
         return self._meta
 
+    @staticmethod
+    def _resolve_sensor(window: SensorWindow, name: str) -> Optional[str]:
+        from ..windows import resolve_sensor_id
+        return resolve_sensor_id(window, name)
+
+    def _available(self, window: SensorWindow, resolved: Optional[str]) -> bool:
+        """A required input is available only with live, non-empty data."""
+        if resolved is None:
+            return False
+        marker = window.modalities.get(resolved)
+        if marker is not None:
+            return marker.state == "ok"
+        # No explicit marker: fall back to actual sample presence so a
+        # sensor that never opened (no marker, no samples) is unavailable.
+        return bool(window.samples.get(resolved))
+
     def predict(self, window: SensorWindow) -> Prediction:
-        unavailable = set(window.missing()) | set(window.stale())
-        blocked = [s for s in self._required if s in unavailable]
+        blocked = [r for r in self._required
+                   if not self._available(window, self._resolve_sensor(window, r))]
         if blocked and self._on_missing == "abstain":
             return Prediction(
                 label="unknown", confidence=0.0,
@@ -71,11 +87,11 @@ class FusionProcessor(Processor):
                 pred.metadata["degraded"] = blocked
             return pred
         # No rule stage: report modality completeness as the prediction.
-        complete = window.is_complete()
+        complete = window.is_complete() and not blocked
         return Prediction(
             label="complete" if complete else "degraded",
             confidence=1.0 if complete else 0.5,
-            metadata={"unavailable": sorted(unavailable)},
+            metadata={"unavailable": sorted(blocked)},
         )
 
 

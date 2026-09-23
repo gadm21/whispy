@@ -112,30 +112,43 @@ class LocalDevice(DeviceHandle):
             sensors=self.sensors(),
         )
 
-    def sensors(self) -> List[Sensor]:
-        out: List[Sensor] = []
+    def _inventory(self) -> List[Dict[str, Any]]:
+        """One entry per advertised sensor: id, modality, driver, handle."""
+        out: List[Dict[str, Any]] = []
         for name, driver in self._drivers.items():
             try:
                 meta = driver.metadata()
             except Exception:
                 continue
             for modality in meta.modalities or (name,):
-                out.append(Sensor(
-                    id=f"{modality}-0", type=modality,
-                    driver=meta.name, driver_version=meta.version,
-                    online=True, capabilities=list(meta.modalities)))
+                out.append({
+                    "id": f"{modality}-0",
+                    "modality": modality,
+                    "driver_name": name,
+                    "driver": driver,
+                    "meta": meta,
+                })
+        return out
+
+    def sensors(self) -> List[Sensor]:
+        out: List[Sensor] = []
+        for item in self._inventory():
+            meta = item["meta"]
+            out.append(Sensor(
+                id=item["id"], type=item["modality"],
+                driver=meta.name, driver_version=meta.version,
+                online=True, capabilities=list(meta.modalities)))
         return out
 
     def sensor(self, sensor_id_or_type: str) -> SensorHandle:
-        for name, driver in self._drivers.items():
-            try:
-                meta = driver.metadata()
-            except Exception:
-                continue
-            if sensor_id_or_type in meta.modalities or sensor_id_or_type == name:
+        # Accept the exact inventory id (``system-0``), a modality
+        # (``system``), or a driver name — all resolve to a live handle.
+        for item in self._inventory():
+            if sensor_id_or_type in (item["id"], item["modality"],
+                                     item["driver_name"]):
                 return _LocalSensorHandle(
-                    driver, f"{sensor_id_or_type}-0",
-                    sensor_id_or_type, self._device_id)
+                    item["driver"], item["id"],
+                    item["modality"], self._device_id)
         raise KeyError(f"no local sensor {sensor_id_or_type!r}; "
                        f"available: {[s.id for s in self.sensors()]}")
 
