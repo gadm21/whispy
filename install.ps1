@@ -106,11 +106,12 @@ if (-not $thothcraftd) {
     Write-Host "thothcraftd entry point not found on PATH — check pip output above." -ForegroundColor Red
     exit 1
 }
-Write-Host "thothcraftd: $($thothcraftd.Source ?? $thothcraftd)"
+$thothcraftdPath = if ($thothcraftd -is [System.Management.Automation.CommandInfo]) { $thothcraftd.Source } else { [string]$thothcraftd }
+Write-Host "thothcraftd: $thothcraftdPath"
 
 if (-not $NoDaemon) {
     $taskName = "ThothcraftDaemon"
-    $action = New-ScheduledTaskAction -Execute $thothcraftd.Source
+    $action = New-ScheduledTaskAction -Execute $thothcraftdPath
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
