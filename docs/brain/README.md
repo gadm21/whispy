@@ -62,7 +62,7 @@ GET  /v1/models        # list registered models
 POST /v1/models        # register a model (201)
 ```
 
-Models are `thoth-model/v1` packages — a rule config or a TorchScript
+Models are `whispy-model/v1` packages — a rule config or a TorchScript
 artifact plus a `ModelManifest` describing inputs, outputs, and hardware
 requirements.
 

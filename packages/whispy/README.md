@@ -67,5 +67,5 @@ assert result.status.value == "succeeded"
 
 `whispy.contracts` is the single source of truth for Device, Sensor,
 SensorSample, SensorWindow, Prediction, Action, ModelManifest
-(`thoth-model/v1`), and the Deployment state machine — shared by Thoth,
-Brain, thothHUB, and the mobile app.
+(`whispy-model/v1`; legacy `thoth-model/v1` accepted), and the Deployment
+state machine — shared by Thoth, Brain, thothHUB, and the mobile app.

@@ -9,8 +9,8 @@ devices, manage models, browse captures, and watch your fleet.
 - **Pair devices** — link a Thoth node to your account (`thoth pair`, then
   confirm in thothHUB).
 - **See your fleet** — every device, its sensors, and whether it's online.
-- **Manage models** — register `thoth-model/v1` packages and deploy them to
-  nodes.
+- **Manage models** — register `whispy-model/v1` packages and deploy them
+  to nodes.
 - **Browse captures** — synchronized sensor windows recorded by your nodes.
 - **Watch predictions** — the live output of each node's SMA loop.
 

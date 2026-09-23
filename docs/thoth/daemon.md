@@ -44,7 +44,7 @@ Manage it with your platform's service tools, or check it with
 
 ## Deployments
 
-When Brain pushes a `thoth-model/v1` deployment, the daemon validates the
+When Brain pushes a `whispy-model/v1` deployment, the daemon validates the
 manifest, installs the processor artifact, activates it, and acknowledges
 with a stable `runtime_model_id`. The new processor takes over the SMA loop
 without a restart.

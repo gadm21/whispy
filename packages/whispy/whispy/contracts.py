@@ -71,7 +71,16 @@ DEPLOYMENT_TRANSITIONS: Dict[DeploymentState, frozenset] = {
 }
 
 PROCESSOR_TYPES = ("rule", "torchscript", "fusion")
-MODEL_MANIFEST_FORMAT = "thoth-model/v1"
+MODEL_MANIFEST_FORMAT = "whispy-model/v1"
+# ``thoth-model/v1`` is the pre-rename name for the same manifest schema.
+# It is accepted on ingest and normalized to ``MODEL_MANIFEST_FORMAT`` so
+# packages produced before the rename keep working; new packages should
+# always emit ``whispy-model/v1``.
+LEGACY_MODEL_MANIFEST_FORMAT = "thoth-model/v1"
+SUPPORTED_MANIFEST_FORMATS = frozenset({
+    MODEL_MANIFEST_FORMAT,
+    LEGACY_MODEL_MANIFEST_FORMAT,
+})
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +472,11 @@ class ModelInput:
 
 @dataclass
 class ModelManifest:
-    """``thoth-model/v1`` artifact manifest (§18)."""
+    """``whispy-model/v1`` artifact manifest (§18).
+
+    Legacy ``thoth-model/v1`` manifests are accepted and normalized to the
+    canonical format name on ``from_dict``.
+    """
 
     name: str
     processor: str                             # one of PROCESSOR_TYPES
@@ -483,8 +496,10 @@ class ModelManifest:
     def validate(self) -> List[str]:
         """Return a list of validation errors (empty when valid)."""
         errors: List[str] = []
-        if self.format != MODEL_MANIFEST_FORMAT:
-            errors.append(f"format must be {MODEL_MANIFEST_FORMAT!r}, got {self.format!r}")
+        if self.format not in SUPPORTED_MANIFEST_FORMATS:
+            errors.append(
+                f"format must be one of {sorted(SUPPORTED_MANIFEST_FORMATS)}, "
+                f"got {self.format!r}")
         if not self.name:
             errors.append("name is required")
         if self.processor not in PROCESSOR_TYPES:
@@ -524,8 +539,11 @@ class ModelManifest:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ModelManifest":
+        fmt = str(data.get("format") or MODEL_MANIFEST_FORMAT)
+        if fmt == LEGACY_MODEL_MANIFEST_FORMAT:
+            fmt = MODEL_MANIFEST_FORMAT
         return cls(
-            format=str(data.get("format") or MODEL_MANIFEST_FORMAT),
+            format=fmt,
             name=str(data.get("name") or ""),
             processor=str(data.get("processor") or ""),
             inputs=[ModelInput.from_dict(i) for i in (data.get("inputs") or [])],

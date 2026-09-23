@@ -76,7 +76,8 @@ implementation from the `processor` field: `rule` → `RuleProcessor`,
 
 ## Deployment
 
-Models are packaged as a `thoth-model/v1` `ModelManifest` and pushed to a
+Models are packaged as a `whispy-model/v1` `ModelManifest` (legacy
+`thoth-model/v1` manifests are still accepted) and pushed to a
 node through Brain's `/v1/deployments` API. The `thoth` node validates,
 installs and activates the processor, then acknowledges with a stable
 `runtime_model_id`. Manage deployments with the `thoth` CLI:

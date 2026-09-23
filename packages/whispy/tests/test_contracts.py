@@ -66,12 +66,31 @@ def test_manifest_validation():
     assert good.validate() == []
 
     bad = ModelManifest.from_dict({
-        "format": "thoth-model/v1", "name": "", "processor": "onnx",
+        "format": "whispy-model/v1", "name": "", "processor": "onnx",
         "inputs": []})
     errors = bad.validate()
     assert any("name" in e for e in errors)
     assert any("processor" in e for e in errors)
     assert any("input" in e for e in errors)
+
+
+def test_manifest_legacy_format_accepted():
+    """Pre-rename ``thoth-model/v1`` manifests still parse and validate,
+    and normalize to the canonical ``whispy-model/v1`` name."""
+    m = ModelManifest.from_dict({
+        "format": "thoth-model/v1", "name": "legacy", "processor": "rule",
+        "inputs": [{"sensor": "radar"}]})
+    assert m.format == "whispy-model/v1"
+    assert m.validate() == []
+    # Serialized form always emits the canonical name.
+    assert m.to_dict()["format"] == "whispy-model/v1"
+
+
+def test_manifest_unknown_format_rejected():
+    m = ModelManifest.from_dict({
+        "format": "whispy-model/v0", "name": "x", "processor": "rule",
+        "inputs": [{"sensor": "radar"}]})
+    assert any("format" in e for e in m.validate())
 
 
 def test_manifest_hash_verify():

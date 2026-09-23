@@ -53,7 +53,7 @@ Thoth is the application you install on a machine. It embeds Whispy and adds:
 - a **CLI** (`thoth status`, `thoth sensors`, `thoth capture`, `thoth models`,
   `thoth pair`, `thoth doctor`, `thoth daemon`),
 - a **daemon** that runs the sense → measure → act (SMA) loop continuously,
-- **deployment** handling for `thoth-model/v1` packages pushed from Brain,
+- **deployment** handling for `whispy-model/v1` packages pushed from Brain,
 - **diagnostics**, **IPC**, and a **local API** on port `5000`.
 
 The daemon's SMA loop:
@@ -84,7 +84,7 @@ and stop captures, and watch fleet state.
 
 1. A **Thoth node** pairs with Brain (`thoth pair`) and reports its sensors.
 2. You **deploy a model** (`POST /v1/deployments`) — Brain ships a
-   `thoth-model/v1` manifest to the node.
+   `whispy-model/v1` manifest to the node.
 3. The node **activates the processor** and runs the SMA loop locally.
 4. **Predictions** actuate locally and can be reported to Brain.
 5. **Captures** record synchronized sensor windows and upload to Brain for

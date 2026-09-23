@@ -16,8 +16,9 @@ pip install thoth-node      # provides the `thoth` command
 - **Runs the SMA loop** — sense → measure → act, continuously, on-device.
 - **Exposes a local API** on port `5000` so Whispy `LanDevice` clients and
   the CLI can talk to it.
-- **Receives deployments** — `thoth-model/v1` packages pushed from Brain are
-  validated, installed, and activated locally.
+- **Receives deployments** — `whispy-model/v1` packages pushed from Brain
+  are validated, installed, and activated locally (legacy `thoth-model/v1`
+  packages are still accepted).
 - **Pairs with Brain** — `thoth pair` links the node to your account for
   fleet management and captures.
 - **Captures datasets** — `thoth capture` records synchronized sensor
