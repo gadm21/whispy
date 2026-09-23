@@ -1,4 +1,4 @@
-﻿# Whispy Processors
+# Whispy Processors
 
 A **processor** maps a sensor window to a `Prediction` — the deployable
 unit of the ThothCraft model ecosystem. A one-line SNR threshold and a

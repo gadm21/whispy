@@ -1,4 +1,4 @@
-﻿# Whispy Sensor Drivers
+# Whispy Sensor Drivers
 
 Any hardware becomes a Thoth sensor by shipping a `SensorDriver` — the
 "Works with Thoth" contract. Drivers are ordinary pip packages discovered
