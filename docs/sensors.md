@@ -1,15 +1,14 @@
-# ThothCraft Sensor Drivers
+﻿# Whispy Sensor Drivers
 
-Any hardware becomes a Thoth node by shipping a `SensorDriver` — the
-"Works with ThothCraft" contract. Drivers are ordinary pip packages
-discovered through the `thothcraft.sensors` entry-point group.
+Any hardware becomes a Thoth sensor by shipping a `SensorDriver` — the
+"Works with Thoth" contract. Drivers are ordinary pip packages discovered
+through the `whispy.sensors` entry-point group.
 
 ## Interface
 
 ```python
-from thothcraft.sensors.base import (
-    SensorDriver, SensorMeta, SensorFrame, HealthReport,
-)
+from whispy.sensors import SensorDriver, SensorMeta, HealthReport
+from whispy.contracts import SensorSample
 
 class MyRadarDriver(SensorDriver):
     def metadata(self) -> SensorMeta:
@@ -29,7 +28,10 @@ class MyRadarDriver(SensorDriver):
 
     def stream(self):
         while self._running:
-            yield SensorFrame.now("radar", self._dev.read_frame())
+            yield SensorSample(
+                device_id=self._device_id, sensor_id="my-radar-0",
+                sensor_type="radar", timestamp=time.time(),
+                sequence=self._seq, payload=self._dev.read_frame())
 
     def close(self):
         self._running = False
@@ -39,40 +41,45 @@ class MyRadarDriver(SensorDriver):
         return HealthReport(status="ok", metrics={"fps": self._fps})
 ```
 
-## SensorFrame contract
+## SensorSample contract
 
-- `sensor_type`: `radar | csi | camera | env | mic | ...`
-- `timestamp_ns`: monotonically increasing nanoseconds
-- `data`: `numpy.ndarray` in standard units (meters, dB, °C, hPa, %RH)
-- `meta`: free-form extras (frame index, gain, ...)
+A driver yields real `SensorSample` measurements — never availability
+booleans. Health is reported separately via `health()` and `Sensor.online`.
+
+- `sensor_type`: `radar | csi | camera | env | mic | system | ...`
+- `timestamp`: seconds (float), monotonically increasing
+- `sequence`: monotonically increasing int
+- `payload`: the measurement (array/dict) in standard units
 
 ## Packaging
 
 ```toml
 # pyproject.toml
 [project]
-name = "thothcraft-sensor-myradar"
-dependencies = ["thothcraft-sdk>=0.1.0"]
+name = "whispy-sensor-myradar"
+dependencies = ["whispy>=0.1.0"]
 
-[project.entry-points."thothcraft.sensors"]
-myradar = "thothcraft_sensor_myradar:MyRadarDriver"
+[project.entry-points."whispy.sensors"]
+myradar = "whispy_sensor_myradar:MyRadarDriver"
 ```
 
-`pip install thothcraft-sensor-myradar` → `thothcraftd` loads it at
-startup; `thothcraft sensors drivers` lists it.
+`pip install whispy-sensor-myradar` makes the driver discoverable:
+`whispy.local()` auto-detects it, and the `thoth` node daemon loads it at
+startup.
 
-## Conformance — "Works with ThothCraft"
+## Conformance — "Works with Thoth"
 
-```bash
-thothcraft sensors test myradar
+```python
+from whispy.sensors import check_driver
+report = check_driver(MyRadarDriver())
+assert report["passed"]
 ```
 
-Runs `check_driver()`: metadata → discover → open → stream (valid frames,
-monotonic timestamps) → health → close. Passing + registry listing earns
-the verified badge.
+Runs metadata → discover → open → stream (valid samples, monotonic
+timestamps) → health → close. Passing earns the verified badge.
 
 ## Scaffold a new driver
 
 ```bash
-thothcraft sensors new myradar   # generates package skeleton + test
+thoth sensors new myradar   # generates package skeleton + conformance test
 ```
