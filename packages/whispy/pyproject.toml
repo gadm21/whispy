@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy"
+version = "0.1.0"
+description = "Whispy — the ThothCraft programmable sensing SDK (local + remote sensors, processors, actuators)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+sensors = [
+    "psutil>=5.9",
+    "opencv-python>=4.8",
+    "pyserial>=3.5",
+    "sense-hat>=2.6; platform_system=='Linux'",
+]
+dl = ["torch>=2.0", "numpy>=1.24"]
+all = [
+    "psutil>=5.9",
+    "opencv-python>=4.8",
+    "pyserial>=3.5",
+    "torch>=2.0",
+    "numpy>=1.24",
+]
+
+[tool.setuptools.packages.find]
+include = ["whispy*"]
+
+[tool.setuptools.package-data]
+whispy = ["py.typed"]

@@ -408,7 +408,7 @@ def models(ctx):
 
 @models.command('list')
 def models_list():
-    """List your trained models."""
+    """List your models."""
     client = _client()
     for model in client.models():
         click.echo(json.dumps(model.info))
