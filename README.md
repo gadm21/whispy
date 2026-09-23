@@ -133,7 +133,7 @@ sudo apt install ./thothcraft-cli_0.1.0_all.deb
 thothcraft login
 thothcraft device init
 systemctl --user daemon-reload
-systemctl --user enable --now thothcraftd
+systemctl --user enable --now thothcraft
 ```
 
 The architecture-independent package ships sources. Post-install creates

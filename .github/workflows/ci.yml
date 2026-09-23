@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash packaging/build-deb.sh
       - run: sudo apt-get install -y ./thothcraft-cli_*_all.deb
-      - run: thothcraft --help && thothcraftd --help
+      - run: thothcraft --help && thothcraft daemon --help
       - uses: actions/upload-artifact@v4
         with:
           name: debian-package

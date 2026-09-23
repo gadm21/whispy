@@ -2,6 +2,6 @@
 set -eu
 # Do not touch user credentials or try to connect to another user's session bus.
 if [ "$1" = remove ]; then
-    echo 'Stop the daemon in each user session: systemctl --user disable --now thothcraftd'
+    echo 'Stop the daemon in each user session: systemctl --user disable --now thothcraft'
     rm -rf -- /opt/thothcraft/venv
 fi

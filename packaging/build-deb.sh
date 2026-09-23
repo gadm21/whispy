@@ -9,7 +9,6 @@ cp -R "$root/packages/thothcraft-sdk" "$root/packages/thothcraft-cli" "$stage/op
 find "$stage/opt/thothcraft/packages" -type d \( -name __pycache__ -o -name '*.egg-info' -o -name .pytest_cache \) -prune -exec rm -rf -- {} +
 sed "s/@VERSION@/$version/g" "$root/packaging/debian/control" > "$stage/DEBIAN/control"
 install -m 755 "$root/packaging/debian/postinst" "$root/packaging/debian/prerm" "$stage/DEBIAN/"
-install -m 644 "$root/packaging/thothcraftd.service" "$stage/usr/lib/systemd/user/"
+install -m 644 "$root/packaging/thothcraft.service" "$stage/usr/lib/systemd/user/"
 ln -s /opt/thothcraft/venv/bin/thothcraft "$stage/usr/bin/thothcraft"
-ln -s /opt/thothcraft/venv/bin/thothcraftd "$stage/usr/bin/thothcraftd"
 dpkg-deb --root-owner-group --build "$stage" "$root/thothcraft-cli_${version}_all.deb"

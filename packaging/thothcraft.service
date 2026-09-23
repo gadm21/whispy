@@ -3,7 +3,7 @@ Description=ThothCraft device heartbeat daemon
 After=network-online.target
 
 [Service]
-ExecStart=/opt/thothcraft/venv/bin/thothcraftd
+ExecStart=/opt/thothcraft/venv/bin/thothcraft daemon
 Restart=on-failure
 RestartSec=10
 NoNewPrivileges=true

@@ -31,14 +31,15 @@ Probes the computer for usable sensors (camera, microphone, Wi-Fi,
 Bluetooth, USB-serial receivers, system sensors) and registers it as a
 Thoth device through the standard pairing flow.
 
-## `thothcraftd`
+## `thothcraft daemon`
 
 The device daemon handles sensor discovery, collection, local storage,
-prediction, cloud sync, commands and heartbeats. The CLI controls it;
-on Linux it runs under systemd:
+prediction, cloud sync, commands and heartbeats. Run it in the foreground
+with `thothcraft daemon`; the CLI controls it. On Linux it runs under
+systemd as the `thothcraft` user unit:
 
 ```bash
-systemctl status thothcraftd
+systemctl --user status thothcraft
 ```
 
 ## apt packaging (maintainer steps)
@@ -49,17 +50,16 @@ systemctl status thothcraftd
    ```text
    thothcraft-cli_0.1.0/
    ├── DEBIAN/control          # Package: thothcraft-cli, Depends: python3
-   ├── DEBIAN/postinst         # systemctl daemon-reload; enable thothcraftd
+   ├── DEBIAN/postinst         # systemctl daemon-reload; enable thothcraft
    ├── usr/lib/thothcraft/     # unpacked wheel + venv or pex binary
    ├── usr/bin/thothcraft      # wrapper → /usr/lib/thothcraft/bin/thothcraft
-   ├── usr/bin/thothcraftd
-   └── lib/systemd/system/thothcraftd.service
+   └── lib/systemd/user/thothcraft.service
    ```
 
 3. `dpkg-deb --build thothcraft-cli_0.1.0`
 4. Host in an APT repo (reprepro/aptly) or ship the `.deb` directly.
 
 Recommended: bundle with `pex` or a venv so the package has no Python
-dependency conflicts. The systemd unit should run
-`thothcraftd --config /etc/thothcraft/device.json` as a dedicated
+dependency conflicts. The systemd unit runs
+`thothcraft daemon --config /etc/thothcraft/device.json` as a dedicated
 `thothcraft` user.
