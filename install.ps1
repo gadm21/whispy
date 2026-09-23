@@ -56,19 +56,29 @@ if ($Local) {
     }
     $cliSpec = if ($NoSensors) { $cli } else { "$cli[sensors]" }
     Write-Host "Installing from local checkout: $Local"
+    $origPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & $py -m pip install --upgrade -e $sdk -e $cliSpec
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $origPref
+    if ($code -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 }
 else {
     Write-Host "Installing from PyPI (falls back to the git repo if unpublished)..."
-    & $py -m pip install --upgrade @packages 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $origPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $py -m pip install --upgrade $packages
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
         $sdkUrl = "git+https://github.com/gadm21/whispy.git#subdirectory=packages/thothcraft-sdk"
         $cliUrl = "git+https://github.com/gadm21/whispy.git#subdirectory=packages/thothcraft-cli"
         $cliSpec = if ($NoSensors) { $cliUrl } else { "$cliUrl[sensors]" }
         & $py -m pip install --upgrade $sdkUrl $cliSpec
+        $code = $LASTEXITCODE
     }
+    $ErrorActionPreference = $origPref
+    if ($code -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 }
-if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 
 function Enable-SshServer {
     Write-Host "Ensuring OpenSSH Server is configured..." -ForegroundColor Cyan
