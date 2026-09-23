@@ -57,15 +57,29 @@ else
         REPO="git+https://github.com/gadm21/whispy.git"
         "$PY" -m pip install --user --upgrade \
             "$REPO#subdirectory=packages/thothcraft-sdk" \
-            "$REPO&subdirectory=packages/thothcraft-cli$([ "$NO_SENSORS" -eq 0 ] && echo '[sensors]' || true)" \
+            "$REPO#subdirectory=packages/thothcraft-cli$([ "$NO_SENSORS" -eq 0 ] && echo '[sensors]' || true)" \
             2>/dev/null || {
                 # pip can't combine extras with direct refs on older versions
                 "$PY" -m pip install --user --upgrade \
                     "$REPO#subdirectory=packages/thothcraft-sdk" \
                     "$REPO#subdirectory=packages/thothcraft-cli"
-                [ "$NO_SENSORS" -eq 0 ] && "$PY" -m pip install --user --upgrade opencv-python pyserial psutil
+                if [ "$NO_SENSORS" -eq 0 ]; then
+                    "$PY" -m pip install --user --upgrade opencv-python pyserial psutil zeroconf
+                    [ "$(uname -s)" = "Linux" ] && "$PY" -m pip install --user --upgrade sense-hat || true
+                fi
             }
     fi
+fi
+
+# Guarantee runtime deps even on editable/older installs that predate them
+# (e.g. zeroconf for mDNS was added after the CLI first shipped).
+ensure_py_dep() {  # module -> pip package
+    "$PY" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$1') else 1)" 2>/dev/null \
+        || "$PY" -m pip install --user --upgrade "$2" || true
+}
+ensure_py_dep zeroconf zeroconf
+if [ "$(uname -s)" = "Linux" ] && [ "$NO_SENSORS" -eq 0 ]; then
+    ensure_py_dep sense_hat sense-hat
 fi
 
 THOTHCRAFT="$(command -v thothcraft || true)"

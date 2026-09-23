@@ -80,6 +80,22 @@ else {
     if ($code -ne 0) { Write-Host "pip install failed" -ForegroundColor Red; exit 1 }
 }
 
+# Guarantee runtime deps even on editable/older installs that predate them
+# (e.g. zeroconf for mDNS was added after the CLI first shipped).
+function Ensure-PyDep([string]$Module, [string]$Package) {
+    & $py -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$Module') else 1)" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing missing dependency: $Package" -ForegroundColor Yellow
+        & $py -m pip install --upgrade $Package
+    }
+}
+Ensure-PyDep zeroconf zeroconf
+if (-not $NoSensors) {
+    Ensure-PyDep cv2 opencv-python
+    Ensure-PyDep serial pyserial
+    Ensure-PyDep psutil psutil
+}
+
 function Enable-SshServer {
     Write-Host "Ensuring OpenSSH Server is configured..." -ForegroundColor Cyan
     try {
