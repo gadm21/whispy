@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import signal
+import socket
 import sys
 import threading
 import time
@@ -188,6 +190,167 @@ def _run_single_inference(processor: Any) -> dict[str, Any]:
     return res
 
 
+def _dashboard_html(device_uuid: str) -> str:
+    hostname = socket.gethostname()
+    os_name = f"{platform.system()} {platform.release()}"
+    token = _load_device_token()
+    pairing_status = "Linked to Brain" if token else "Unpaired (Local Mode)"
+    pairing_badge_class = "badge-linked" if token else "badge-unpaired"
+    sensors = _sensor_inventory()
+    with _MODELS_LOCK:
+        models = [
+            {"id": mid, "name": p.metadata().name, "sensor": p.metadata().sensor}
+            for mid, p in _ACTIVE_MODELS.items()
+        ]
+        recent = list(_RECENT_PREDICTIONS)[-10:]
+        recent.reverse()
+
+    sensor_rows = ""
+    for s in sensors:
+        status_color = "#10b981" if s["online"] else "#64748b"
+        status_text = "online" if s["online"] else "offline"
+        sensor_rows += f"""
+        <tr>
+            <td style="font-weight:600;">{s['name']}</td>
+            <td><code style="color:#0284c7;">{s['key']}</code></td>
+            <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{status_color};margin-right:6px;"></span>{status_text}</td>
+            <td style="color:#64748b;font-size:12px;">{s.get('source', '')}</td>
+        </tr>
+        """
+
+    models_html = ""
+    if models:
+        for m in models:
+            models_html += f"""
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
+                <div style="font-weight:600;">{m['name']}</div>
+                <div style="font-size:12px;color:#64748b;">Target Sensor: <code>{m['sensor']}</code> | ID: {m['id']}</div>
+            </div>
+            """
+    else:
+        models_html = '<div style="color:#64748b;font-size:13px;">No models deployed yet. Deploy from Portal or SDK.</div>'
+
+    preds_html = ""
+    if recent:
+        for p in recent:
+            ts = time.strftime('%H:%M:%S', time.localtime(p.get('timestamp', time.time())))
+            label = p.get('label', 'unknown')
+            conf = p.get('confidence', 1.0)
+            preds_html += f"""
+            <div style="padding:8px 12px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;font-size:13px;">
+                <div><strong>{p.get('model_name', 'model')}</strong>: <span style="color:#0284c7;font-weight:600;">{label}</span> ({conf*100:.1f}%)</div>
+                <div style="color:#94a3b8;font-size:12px;">{ts}</div>
+            </div>
+            """
+    else:
+        preds_html = '<div style="color:#64748b;font-size:13px;padding:12px;">No predictions emitted yet.</div>'
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ThothCraft Node — {hostname}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 24px; }}
+        .container {{ max-width: 980px; margin: 0 auto; }}
+        header {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }}
+        h1 {{ margin: 0; font-size: 22px; font-weight: 700; color: #0f172a; }}
+        .badge {{ padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }}
+        .badge-linked {{ background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }}
+        .badge-unpaired {{ background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
+        .card {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03); }}
+        .card h2 {{ margin: 0 0 14px; font-size: 16px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+        th, td {{ text-align: left; padding: 8px 10px; }}
+        th {{ color: #64748b; font-weight: 600; border-bottom: 1px solid #e2e8f0; }}
+        tr:not(:last-child) td {{ border-bottom: 1px solid #f8fafc; }}
+        .btn {{ display: inline-block; background: #0f172a; color: #ffffff; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }}
+        .btn:hover {{ background: #334155; }}
+        .btn-outline {{ background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }}
+        .btn-outline:hover {{ background: #f8fafc; }}
+        .camera-box {{ background: #000000; border-radius: 8px; overflow: hidden; position: relative; min-height: 180px; display: flex; align-items: center; justify-content: center; }}
+        .camera-box img {{ max-width: 100%; max-height: 240px; display: block; }}
+        pre {{ background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; overflow-x: auto; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>ThothCraft Node · {hostname}</h1>
+                <div style="font-size: 13px; color: #64748b; margin-top: 4px;">
+                    UUID: <code style="color: #0f172a;">{device_uuid}</code> · OS: {os_name}
+                </div>
+            </div>
+            <div>
+                <span class="badge {pairing_badge_class}">{pairing_status}</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card" style="grid-column: span 2;">
+                <h2>Connected Sensors</h2>
+                <table>
+                    <thead>
+                        <tr><th>Sensor</th><th>Modality Key</th><th>Status</th><th>Driver / Probe Detail</th></tr>
+                    </thead>
+                    <tbody>
+                        {sensor_rows}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Built-in Camera Preview</h2>
+                <div class="camera-box">
+                    <img id="camera-frame" src="/api/captures/live/video/frame" alt="Camera frame" onerror="this.style.display='none'; document.getElementById('cam-msg').style.display='block';" onload="this.style.display='block'; document.getElementById('cam-msg').style.display='none';">
+                    <div id="cam-msg" style="display:none; color:#94a3b8; font-size:12px; padding:20px; text-align:center;">No frame or camera in use</div>
+                </div>
+                <div style="margin-top: 12px; display: flex; gap: 8px;">
+                    <button class="btn btn-outline" onclick="document.getElementById('camera-frame').src='/api/captures/live/video/frame?t=' + Date.now();">Refresh Frame</button>
+                    <a class="btn btn-outline" href="/api/captures/live/video/frame" target="_blank">Open Direct Feed</a>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Active Models & Actuators</h2>
+                {models_html}
+                <div style="margin-top: 12px;">
+                    <button class="btn" onclick="fetch('/api/models/predict', {{method:'POST'}}).then(r=>r.json()).then(d=>alert('Inference result: ' + JSON.stringify(d)));">Run Inference Now</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Recent Predictions Stream</h2>
+                <div style="max-height: 240px; overflow-y: auto;">
+                    {preds_html}
+                </div>
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-outline" onclick="location.reload();">Refresh Log</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Quick Access & Remote Control</h2>
+                <p style="font-size: 13px; color: #475569; margin: 0 0 10px;">
+                    This node provides an OpenSSH server (port 22) and local REST API on port 5000.
+                </p>
+                <div style="font-size: 12px; margin-bottom: 6px; font-weight: 600;">Link to ThothCraft Cloud:</div>
+                <pre>thothcraft login
+thothcraft pair</pre>
+                <div style="font-size: 12px; margin-bottom: 6px; font-weight: 600; margin-top: 10px;">Python SDK Local Inspection:</div>
+                <pre>import thothcraft
+node = thothcraft.local("127.0.0.1")
+print(node.sensors())</pre>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
+
+
 def _make_handler(device_uuid: str):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes,
@@ -204,7 +367,10 @@ def _make_handler(device_uuid: str):
 
         def do_GET(self) -> None:  # noqa: N802 — stdlib handler name
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
-            if path in ("/health", "/api/health"):
+            if path in ("", "/", "/dashboard"):
+                html = _dashboard_html(device_uuid)
+                self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            elif path in ("/health", "/api/health"):
                 self._json({"status": "ok", "daemon": "thothcraftd",
                             "device_id": device_uuid})
             elif path == "/api/sensors":
