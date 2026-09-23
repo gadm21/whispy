@@ -125,10 +125,27 @@ if (-not $NoDaemon) {
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-        -Settings $settings -Description "ThothCraft device daemon (local sensor API + Brain heartbeat)" -Force | Out-Null
-    Start-ScheduledTask -TaskName $taskName
-    Write-Host "✓ thothcraftd registered as logon task '$taskName' and started" -ForegroundColor Green
+    $registered = $false
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+            -Settings $settings -Description "ThothCraft device daemon (local sensor API + Brain heartbeat)" -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Write-Host "✓ thothcraftd registered as logon task '$taskName' and started" -ForegroundColor Green
+        $registered = $true
+    } catch {
+        try {
+            $startupDir = [System.IO.Path]::Combine($env:APPDATA, "Microsoft\Windows\Start Menu\Programs\Startup")
+            if (Test-Path $startupDir) {
+                $cmdFile = Join-Path $startupDir "thothcraftd.cmd"
+                "@start `"`" `"$thothcraftdPath`"" | Out-File -FilePath $cmdFile -Encoding ascii
+                Write-Host "✓ thothcraftd added to Startup folder ($cmdFile)" -ForegroundColor Green
+                $registered = $true
+            }
+        } catch { }
+        if (-not $registered) {
+            Write-Host "Note: To register scheduled logon task, run PowerShell as Administrator. You can run 'thothcraftd' directly." -ForegroundColor Yellow
+        }
+    }
 }
 
 if (-not $NoSsh) {
