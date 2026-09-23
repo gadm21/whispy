@@ -68,23 +68,23 @@ else
     fi
 fi
 
-THOTHCRAFTD="$(command -v thothcraftd || true)"
-if [ -z "$THOTHCRAFTD" ]; then
-    THOTHCRAFTD="$("$PY" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')/thothcraftd"
+THOTHCRAFT="$(command -v thothcraft || true)"
+if [ -z "$THOTHCRAFT" ]; then
+    THOTHCRAFT="$("$PY" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')/thothcraft"
 fi
-[ -x "$THOTHCRAFTD" ] || THOTHCRAFTD="$HOME/.local/bin/thothcraftd"
-echo "thothcraftd: $THOTHCRAFTD"
+[ -x "$THOTHCRAFT" ] || THOTHCRAFT="$HOME/.local/bin/thothcraft"
+echo "thothcraft: $THOTHCRAFT"
 
 if [ "$NO_DAEMON" -eq 0 ]; then
     if [ "$(uname -s)" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
         mkdir -p "$HOME/.config/systemd/user"
-        cat > "$HOME/.config/systemd/user/thothcraftd.service" <<EOF
+        cat > "$HOME/.config/systemd/user/thothcraft.service" <<EOF
 [Unit]
 Description=ThothCraft device daemon (local sensor API + Brain heartbeat)
 After=network-online.target
 
 [Service]
-ExecStart=$THOTHCRAFTD
+ExecStart=$THOTHCRAFT daemon
 Restart=on-failure
 RestartSec=10
 
@@ -92,8 +92,8 @@ RestartSec=10
 WantedBy=default.target
 EOF
         systemctl --user daemon-reload
-        systemctl --user enable --now thothcraftd
-        echo "✓ thothcraftd enabled as a systemd user service"
+        systemctl --user enable --now thothcraft
+        echo "✓ thothcraft daemon enabled as a systemd user service"
     elif [ "$(uname -s)" = "Darwin" ]; then
         PLIST="$HOME/Library/LaunchAgents/com.thothcraft.daemon.plist"
         mkdir -p "$(dirname "$PLIST")"
@@ -102,16 +102,16 @@ EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.thothcraft.daemon</string>
-  <key>ProgramArguments</key><array><string>$THOTHCRAFTD</string></array>
+  <key>ProgramArguments</key><array><string>$THOTHCRAFT</string><string>daemon</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
 EOF
         launchctl unload "$PLIST" 2>/dev/null || true
         launchctl load "$PLIST"
-        echo "✓ thothcraftd loaded as a LaunchAgent"
+        echo "✓ thothcraft daemon loaded as a LaunchAgent"
     else
-        echo "No supported service manager — run 'thothcraftd' manually or via your init system."
+        echo "No supported service manager — run 'thothcraft daemon' manually or via your init system."
     fi
 fi
 
@@ -141,14 +141,22 @@ if [ "$NO_SSH" -eq 0 ]; then
     fi
 fi
 
+HOSTNAME="$("$PY" -c "import sys; sys.path.insert(0, 'packages/thothcraft-cli'); from thothcraft_cli.daemon import _device_uuid, _device_hostname; print(_device_hostname(_device_uuid()))" 2>/dev/null || echo 'thoth-node.local')"
+
 echo ""
-echo "Done. Next steps:"
+echo "Supported Terminals:"
+echo "  - bash"
+echo "  - zsh"
+echo "  - sh / dash"
+echo ""
+echo "Done. Next steps in your terminal:"
 echo "  thothcraft login            # link your thothHUB account"
 echo "  thothcraft pair             # claim this computer as a device"
 echo "  thothcraft device init      # probe sensors + pair in one step"
 echo ""
 echo "Local Dashboard access:"
-echo "  Open http://localhost:5000 in your browser"
+echo "  http://$HOSTNAME:5000"
+echo "  http://localhost:5000"
 echo ""
 echo "Local SDK check (no pairing needed):"
-echo "  python3 -c \"import thothcraft; print(thothcraft.local('127.0.0.1').sensors())\""
+echo "  python3 -c \"import thothcraft; print(thothcraft.local('$HOSTNAME').sensors())\""

@@ -106,22 +106,63 @@ function Enable-SshServer {
     }
 }
 
-$thothcraftd = Get-Command thothcraftd -ErrorAction SilentlyContinue
-if (-not $thothcraftd) {
-    $userScripts = & $py -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"
-    $candidate = Join-Path $userScripts "thothcraftd.exe"
-    if (Test-Path $candidate) { $thothcraftd = $candidate }
+$userScripts = & $py -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"
+$sysScripts = & $py -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+
+# Ensure user scripts are in Windows User PATH
+try {
+    $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userScripts -and ($currentPath -notlike "*$userScripts*")) {
+        $newPath = if ($currentPath) { "$userScripts;$currentPath" } else { $userScripts }
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+        $env:PATH = "$userScripts;$env:PATH"
+        Write-Host "✓ Added Python Scripts to Windows User PATH: $userScripts" -ForegroundColor Green
+    }
+} catch { }
+
+# Ensure Git Bash profiles have the PATH export
+try {
+    $posixScripts = $userScripts.Replace('\', '/').Replace('C:', '/c')
+    $bashExport = "`n# Added by ThothCraft`nexport PATH=`"`$PATH:$posixScripts`"`n"
+    foreach ($profileName in @(".bashrc", ".bash_profile")) {
+        $pPath = Join-Path $HOME $profileName
+        $existing = if (Test-Path $pPath) { Get-Content $pPath -Raw } else { "" }
+        if ($existing -notlike "*$posixScripts*") {
+            Add-Content -Path $pPath -Value $bashExport -Encoding utf8
+            Write-Host "✓ Configured Git Bash profile: $pPath" -ForegroundColor Green
+        }
+    }
+} catch { }
+
+$thothcraft = Get-Command thothcraft -ErrorAction SilentlyContinue
+if (-not $thothcraft) {
+    foreach ($cand in @((Join-Path $userScripts "thothcraft.exe"), (Join-Path $sysScripts "thothcraft.exe"))) {
+        if (Test-Path $cand) { $thothcraft = $cand; break }
+    }
 }
-if (-not $thothcraftd) {
-    Write-Host "thothcraftd entry point not found on PATH — check pip output above." -ForegroundColor Red
+
+# Copy thothcraft.exe to WindowsApps for instant PATH availability across all active terminals
+$winApps = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
+if (Test-Path $winApps) {
+    $srcExe = if ($thothcraft -is [System.Management.Automation.CommandInfo]) { $thothcraft.Source } else { [string]$thothcraft }
+    if ($srcExe -and (Test-Path $srcExe)) {
+        try {
+            Copy-Item $srcExe -Destination (Join-Path $winApps "thothcraft.exe") -Force -ErrorAction SilentlyContinue
+            Write-Host "✓ Copied thothcraft to $winApps (immediately available in all terminals)" -ForegroundColor Green
+        } catch { }
+    }
+}
+
+if (-not $thothcraft) {
+    Write-Host "thothcraft entry point not found on PATH — check pip output above." -ForegroundColor Red
     exit 1
 }
-$thothcraftdPath = if ($thothcraftd -is [System.Management.Automation.CommandInfo]) { $thothcraftd.Source } else { [string]$thothcraftd }
-Write-Host "thothcraftd: $thothcraftdPath"
+$thothcraftPath = if ($thothcraft -is [System.Management.Automation.CommandInfo]) { $thothcraft.Source } else { [string]$thothcraft }
+Write-Host "thothcraft: $thothcraftPath"
 
 if (-not $NoDaemon) {
-    $taskName = "ThothcraftDaemon"
-    $action = New-ScheduledTaskAction -Execute $thothcraftdPath
+    $taskName = "Thothcraft"
+    $action = New-ScheduledTaskAction -Execute $thothcraftPath -Argument "daemon"
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -130,20 +171,20 @@ if (-not $NoDaemon) {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
             -Settings $settings -Description "ThothCraft device daemon (local sensor API + Brain heartbeat)" -Force -ErrorAction Stop | Out-Null
         Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        Write-Host "✓ thothcraftd registered as logon task '$taskName' and started" -ForegroundColor Green
+        Write-Host "✓ thothcraft daemon registered as logon task '$taskName' and started" -ForegroundColor Green
         $registered = $true
     } catch {
         try {
             $startupDir = [System.IO.Path]::Combine($env:APPDATA, "Microsoft\Windows\Start Menu\Programs\Startup")
             if (Test-Path $startupDir) {
-                $cmdFile = Join-Path $startupDir "thothcraftd.cmd"
-                "@start `"`" `"$thothcraftdPath`"" | Out-File -FilePath $cmdFile -Encoding ascii
-                Write-Host "✓ thothcraftd added to Startup folder ($cmdFile)" -ForegroundColor Green
+                $cmdFile = Join-Path $startupDir "thothcraft.cmd"
+                "@start `"`" `"$thothcraftPath`" daemon" | Out-File -FilePath $cmdFile -Encoding ascii
+                Write-Host "✓ thothcraft daemon added to Startup folder ($cmdFile)" -ForegroundColor Green
                 $registered = $true
             }
         } catch { }
         if (-not $registered) {
-            Write-Host "Note: To register scheduled logon task, run PowerShell as Administrator. You can run 'thothcraftd' directly." -ForegroundColor Yellow
+            Write-Host "Note: To register scheduled logon task, run PowerShell as Administrator. You can run 'thothcraft daemon' directly." -ForegroundColor Yellow
         }
     }
 }
@@ -152,11 +193,24 @@ if (-not $NoSsh) {
     Enable-SshServer
 }
 
+$hostName = try { & $py -c "import sys; sys.path.insert(0, r'packages/thothcraft-cli'); from thothcraft_cli.daemon import _device_uuid, _device_hostname; print(_device_hostname(_device_uuid()))" 2>$null } catch { "thoth-node.local" }
+if (-not $hostName) { $hostName = "thoth-node.local" }
+
 Write-Host ""
-Write-Host "Done. Next steps:" -ForegroundColor Cyan
+Write-Host "Supported Terminals:" -ForegroundColor Cyan
+Write-Host "  - Windows PowerShell 5.1 / PowerShell 7+"
+Write-Host "  - Windows Terminal"
+Write-Host "  - Git Bash (C:\Program Files\Git\bin\bash.exe)"
+Write-Host "  - Command Prompt (cmd.exe)"
+Write-Host ""
+Write-Host "Done. Next steps in your terminal (PowerShell, CMD, or Git Bash):" -ForegroundColor Cyan
 Write-Host "  thothcraft login            # link your thothHUB account"
 Write-Host "  thothcraft pair             # claim this computer as a device"
 Write-Host "  thothcraft device init      # probe sensors + pair in one step"
 Write-Host ""
+Write-Host "Local Dashboard Access:" -ForegroundColor Cyan
+Write-Host "  http://$hostName:5000"
+Write-Host "  http://localhost:5000"
+Write-Host ""
 Write-Host "Local SDK check (no pairing needed):"
-Write-Host "  python -c `"import thothcraft; print(thothcraft.local('127.0.0.1').sensors())`""
+Write-Host "  python -c `"import thothcraft; print(thothcraft.local('$hostName').sensors())`""

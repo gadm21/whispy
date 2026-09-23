@@ -36,6 +36,59 @@ _RECENT_PREDICTIONS: list[dict[str, Any]] = []
 _MODELS_LOCK = threading.Lock()
 
 
+THOTH_NAMES = [
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+    "alex", "amina", "andre", "aria", "arjun", "ben", "carlos", "chen", "clara", "dario", "elena", "emma", "felix", "freya",
+    "hana", "idris", "ivy", "jade", "jonas", "kai", "keiko", "leila", "liam", "luca", "mara", "mateo", "maya", "milo", "nina",
+    "noah", "omar", "oscar", "priya", "ravi", "rosa", "sara", "soren", "theo", "uma", "vera", "yuki", "zara",
+    "amsterdam", "athens", "austin", "berlin", "cairo", "chicago", "denver", "dublin", "geneva", "hanoi", "havana",
+    "kyoto", "lisbon", "london", "madrid", "manila", "nairobi", "oslo", "paris", "perth", "prague", "quito", "reykjavik",
+    "rome", "seoul", "sydney", "tokyo", "toronto", "venice", "vienna", "zurich"
+]
+
+
+def _device_hostname(device_uuid: str) -> str:
+    """Consistent thoth-<name>.local hostname convention, persisted locally."""
+    env_name = os.getenv("THOTH_HOSTNAME")
+    if env_name:
+        clean = env_name.strip().lower()
+        return clean if clean.endswith(".local") else f"{clean}.local"
+
+    if DEVICE_FILE.exists():
+        try:
+            data = json.loads(DEVICE_FILE.read_text())
+            if data.get("device_hostname"):
+                return data["device_hostname"]
+            if data.get("device_name") and data["device_name"].lower().startswith("thoth-"):
+                h = data["device_name"].lower()
+                return h if h.endswith(".local") else f"{h}.local"
+        except (ValueError, KeyError):
+            pass
+
+    sys_host = socket.gethostname().lower()
+    if sys_host.startswith("thoth-"):
+        chosen = f"{sys_host}.local"
+    else:
+        try:
+            idx = int(uuid.UUID(device_uuid)) % len(THOTH_NAMES)
+        except Exception:
+            idx = sum(ord(c) for c in device_uuid) % len(THOTH_NAMES)
+        chosen = f"thoth-{THOTH_NAMES[idx]}.local"
+
+    try:
+        data = {}
+        if DEVICE_FILE.exists():
+            data = json.loads(DEVICE_FILE.read_text())
+        data["device_hostname"] = chosen
+        if not data.get("device_name"):
+            data["device_name"] = chosen.replace(".local", "")
+        DEVICE_FILE.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
+
+    return chosen
+
+
 def _device_uuid() -> str:
     """Stable per-machine device UUID, persisted locally."""
     if DEVICE_FILE.exists():
@@ -152,7 +205,7 @@ def _register_model(model_config: dict[str, Any]) -> dict[str, Any]:
     processor = RuleProcessor(rule_config, meta=meta)
     with _MODELS_LOCK:
         _ACTIVE_MODELS[model_id] = processor
-    print(f"[thothcraftd] registered model {name} ({model_id}) on sensor '{sensor}'")
+    print(f"[thothcraft] registered model {name} ({model_id}) on sensor '{sensor}'")
     return {"id": model_id, "name": name, "sensor": sensor, "status": "active"}
 
 
@@ -191,7 +244,7 @@ def _run_single_inference(processor: Any) -> dict[str, Any]:
 
 
 def _dashboard_html(device_uuid: str) -> str:
-    hostname = socket.gethostname()
+    hostname = _device_hostname(device_uuid)
     os_name = f"{platform.system()} {platform.release()}"
     token = _load_device_token()
     pairing_status = "Linked to Brain" if token else "Unpaired (Local Mode)"
@@ -207,14 +260,14 @@ def _dashboard_html(device_uuid: str) -> str:
 
     sensor_rows = ""
     for s in sensors:
-        status_color = "#10b981" if s["online"] else "#64748b"
+        status_color = "#238653" if s["online"] else "#8fa8ad"
         status_text = "online" if s["online"] else "offline"
         sensor_rows += f"""
         <tr>
-            <td style="font-weight:600;">{s['name']}</td>
-            <td><code style="color:#0284c7;">{s['key']}</code></td>
+            <td style="font-weight:600;color:#eef6f7;">{s['name']}</td>
+            <td><code style="color:#4fd5cd;">{s['key']}</code></td>
             <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{status_color};margin-right:6px;"></span>{status_text}</td>
-            <td style="color:#64748b;font-size:12px;">{s.get('source', '')}</td>
+            <td style="color:#8fa8ad;font-size:12px;">{s.get('source', '')}</td>
         </tr>
         """
 
@@ -222,13 +275,13 @@ def _dashboard_html(device_uuid: str) -> str:
     if models:
         for m in models:
             models_html += f"""
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
-                <div style="font-weight:600;">{m['name']}</div>
-                <div style="font-size:12px;color:#64748b;">Target Sensor: <code>{m['sensor']}</code> | ID: {m['id']}</div>
+            <div style="background:#faf8f2;border:1px solid #c9c4b9;border-radius:10px;padding:12px;margin-bottom:8px;">
+                <div style="font-weight:600;color:#11110f;">{m['name']}</div>
+                <div style="font-size:12px;color:#6d6961;margin-top:2px;">Target Sensor: <code style="color:#11110f;">{m['sensor']}</code> | ID: {m['id']}</div>
             </div>
             """
     else:
-        models_html = '<div style="color:#64748b;font-size:13px;">No models deployed yet. Deploy from Portal or SDK.</div>'
+        models_html = '<div style="color:#6d6961;font-size:13px;">No models deployed yet. Deploy from Portal or SDK.</div>'
 
     preds_html = ""
     if recent:
@@ -237,61 +290,292 @@ def _dashboard_html(device_uuid: str) -> str:
             label = p.get('label', 'unknown')
             conf = p.get('confidence', 1.0)
             preds_html += f"""
-            <div style="padding:8px 12px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;font-size:13px;">
-                <div><strong>{p.get('model_name', 'model')}</strong>: <span style="color:#0284c7;font-weight:600;">{label}</span> ({conf*100:.1f}%)</div>
-                <div style="color:#94a3b8;font-size:12px;">{ts}</div>
+            <div style="padding:8px 0;border-bottom:1px solid #c9c4b9;display:flex;justify-content:space-between;align-items:center;font-size:13px;">
+                <div>
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#238653;margin-right:6px;"></span>
+                    <strong>{p.get('model_name', 'model')}</strong>: <span style="font-weight:600;color:#11110f;">{label}</span> ({conf*100:.1f}%)
+                </div>
+                <div style="color:#6d6961;font-size:12px;font-family:ui-monospace,monospace;">{ts}</div>
             </div>
             """
     else:
-        preds_html = '<div style="color:#64748b;font-size:13px;padding:12px;">No predictions emitted yet.</div>'
+        preds_html = '<div style="color:#6d6961;font-size:13px;padding:8px 0;">No predictions emitted yet.</div>'
 
     return f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>ThothCraft Node — {hostname}</title>
+    <title>Thoth Device — {hostname}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#11110f">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 24px; }}
-        .container {{ max-width: 980px; margin: 0 auto; }}
-        header {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }}
-        h1 {{ margin: 0; font-size: 22px; font-weight: 700; color: #0f172a; }}
-        .badge {{ padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }}
-        .badge-linked {{ background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }}
-        .badge-unpaired {{ background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
-        .card {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.03); }}
-        .card h2 {{ margin: 0 0 14px; font-size: 16px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-        th, td {{ text-align: left; padding: 8px 10px; }}
-        th {{ color: #64748b; font-weight: 600; border-bottom: 1px solid #e2e8f0; }}
-        tr:not(:last-child) td {{ border-bottom: 1px solid #f8fafc; }}
-        .btn {{ display: inline-block; background: #0f172a; color: #ffffff; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }}
-        .btn:hover {{ background: #334155; }}
-        .btn-outline {{ background: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; }}
-        .btn-outline:hover {{ background: #f8fafc; }}
-        .camera-box {{ background: #000000; border-radius: 8px; overflow: hidden; position: relative; min-height: 180px; display: flex; align-items: center; justify-content: center; }}
-        .camera-box img {{ max-width: 100%; max-height: 240px; display: block; }}
-        pre {{ background: #0f172a; color: #f8fafc; padding: 12px; border-radius: 8px; font-size: 12px; overflow-x: auto; }}
+        :root {{
+            --portal-ink: #11110f;
+            --portal-paper: #f4f1e9;
+            --portal-panel: #faf8f2;
+            --portal-card: #ffffff;
+            --portal-line: #c9c4b9;
+            --portal-muted: #6d6961;
+            --portal-success: #238653;
+            --portal-danger: #a63730;
+            --portal-teal: #4fd5cd;
+            --portal-dark: #0d1517;
+            --portal-dark-card: #122024;
+            --portal-dark-line: #1b2a30;
+            --portal-radius: 14px;
+        }}
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--portal-paper);
+            color: var(--portal-ink);
+            -webkit-font-smoothing: antialiased;
+            letter-spacing: -.01em;
+        }}
+        .site-header {{
+            background: rgba(17,17,15,.96);
+            color: var(--portal-paper);
+            border-bottom: 1px solid #353530;
+            backdrop-filter: blur(18px);
+            padding: 14px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }}
+        .site-brand {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 15px;
+            letter-spacing: -.03em;
+        }}
+        .site-mark {{
+            width: 28px;
+            height: 28px;
+            display: grid;
+            place-items: center;
+            border: 1px solid #878279;
+            border-radius: 50%;
+            font-size: 11px;
+            font-family: ui-monospace, monospace;
+            font-weight: 700;
+            color: #ffffff;
+        }}
+        .nav-host {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 13px;
+            color: var(--portal-teal);
+            font-weight: 600;
+        }}
+        .container {{
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 28px 24px 60px;
+        }}
+        .hero-banner {{
+            background: var(--portal-panel);
+            border: 1px solid var(--portal-line);
+            border-radius: var(--portal-radius);
+            padding: 24px 28px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }}
+        .hero-banner h1 {{
+            margin: 0;
+            font-size: 26px;
+            font-weight: 600;
+            letter-spacing: -.04em;
+        }}
+        .hero-banner .meta {{
+            font-size: 13px;
+            color: var(--portal-muted);
+            margin-top: 6px;
+        }}
+        .hero-banner .meta code {{
+            color: var(--portal-ink);
+            font-family: ui-monospace, monospace;
+        }}
+        .badge {{
+            padding: 6px 14px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: ui-monospace, monospace;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }}
+        .badge-linked {{
+            background: rgba(35,134,83,.12);
+            color: var(--portal-success);
+            border: 1px solid rgba(35,134,83,.3);
+        }}
+        .badge-unpaired {{
+            background: rgba(109,105,97,.12);
+            color: var(--portal-muted);
+            border: 1px solid var(--portal-line);
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }}
+        .card {{
+            background: var(--portal-card);
+            border: 1px solid var(--portal-line);
+            border-radius: var(--portal-radius);
+            padding: 22px 24px;
+        }}
+        .card.dark {{
+            background: var(--portal-dark);
+            border: 1px solid #22333a;
+            color: #eef6f7;
+        }}
+        .card h2 {{
+            margin: 0 0 16px;
+            font-size: 17px;
+            font-weight: 600;
+            letter-spacing: -.02em;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }}
+        .k-tag {{
+            font: 700 11px ui-monospace, monospace;
+            letter-spacing: .14em;
+            text-transform: uppercase;
+            color: var(--portal-muted);
+        }}
+        .card.dark .k-tag {{
+            color: #8fa8ad;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }}
+        th, td {{
+            text-align: left;
+            padding: 10px 8px;
+        }}
+        th {{
+            color: #8fa8ad;
+            font: 700 11px ui-monospace, monospace;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+            border-bottom: 1px solid #1b2a30;
+        }}
+        tr:not(:last-child) td {{
+            border-bottom: 1px solid #1b2a30;
+        }}
+        .btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 9px 18px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 600;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all .15s ease;
+            border: 1px solid transparent;
+        }}
+        .btn-primary {{
+            background: var(--portal-ink);
+            color: #ffffff;
+        }}
+        .btn-primary:hover {{
+            background: #2e2e2a;
+        }}
+        .btn-outline {{
+            background: transparent;
+            color: var(--portal-ink);
+            border-color: var(--portal-line);
+        }}
+        .btn-outline:hover {{
+            background: var(--portal-panel);
+        }}
+        .btn-teal {{
+            background: var(--portal-teal);
+            color: #071012;
+            font-weight: 700;
+        }}
+        .btn-teal:hover {{
+            opacity: .9;
+        }}
+        .btn-dark-outline {{
+            background: #122024;
+            color: #8fa8ad;
+            border: 1px solid #22333a;
+        }}
+        .btn-dark-outline:hover {{
+            color: #eef6f7;
+            border-color: var(--portal-teal);
+        }}
+        .camera-box {{
+            background: #000000;
+            border: 1px solid #22333a;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .camera-box img {{
+            max-width: 100%;
+            max-height: 260px;
+            display: block;
+        }}
+        pre {{
+            background: #11110f;
+            color: #f4f1e9;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-size: 12px;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }}
     </style>
 </head>
 <body>
+    <header class="site-header">
+        <div class="site-brand">
+            <span class="site-mark">&bull;</span>
+            <span>Thoth Edge Node</span>
+        </div>
+        <div class="nav-host">{hostname}</div>
+    </header>
+
     <div class="container">
-        <header>
+        <div class="hero-banner">
             <div>
-                <h1>ThothCraft Node · {hostname}</h1>
-                <div style="font-size: 13px; color: #64748b; margin-top: 4px;">
-                    UUID: <code style="color: #0f172a;">{device_uuid}</code> · OS: {os_name}
+                <p class="k-tag" style="margin:0 0 6px;">Edge Sensor Node</p>
+                <h1>{hostname}</h1>
+                <div class="meta">
+                    UUID: <code>{device_uuid}</code> &middot; OS: {os_name}
                 </div>
             </div>
             <div>
                 <span class="badge {pairing_badge_class}">{pairing_status}</span>
             </div>
-        </header>
+        </div>
 
         <div class="grid">
-            <div class="card" style="grid-column: span 2;">
-                <h2>Connected Sensors</h2>
+            <div class="card dark" style="grid-column: span 2;">
+                <h2>
+                    <span>Connected Sensors</span>
+                    <span class="k-tag">Hardware Discovery</span>
+                </h2>
                 <table>
                     <thead>
                         <tr><th>Sensor</th><th>Modality Key</th><th>Status</th><th>Driver / Probe Detail</th></tr>
@@ -302,47 +586,59 @@ def _dashboard_html(device_uuid: str) -> str:
                 </table>
             </div>
 
-            <div class="card">
-                <h2>Built-in Camera Preview</h2>
+            <div class="card dark">
+                <h2>
+                    <span>Built-in Camera Preview</span>
+                    <span class="k-tag" style="color:var(--portal-teal);">Sensor Lab Stage</span>
+                </h2>
                 <div class="camera-box">
                     <img id="camera-frame" src="/api/captures/live/video/frame" alt="Camera frame" onerror="this.style.display='none'; document.getElementById('cam-msg').style.display='block';" onload="this.style.display='block'; document.getElementById('cam-msg').style.display='none';">
-                    <div id="cam-msg" style="display:none; color:#94a3b8; font-size:12px; padding:20px; text-align:center;">No frame or camera in use</div>
+                    <div id="cam-msg" style="display:none; color:#8fa8ad; font-size:12px; padding:20px; text-align:center;">No active frame or camera in use</div>
                 </div>
-                <div style="margin-top: 12px; display: flex; gap: 8px;">
-                    <button class="btn btn-outline" onclick="document.getElementById('camera-frame').src='/api/captures/live/video/frame?t=' + Date.now();">Refresh Frame</button>
-                    <a class="btn btn-outline" href="/api/captures/live/video/frame" target="_blank">Open Direct Feed</a>
+                <div style="margin-top: 14px; display: flex; gap: 8px;">
+                    <button class="btn btn-dark-outline" onclick="document.getElementById('camera-frame').src='/api/captures/live/video/frame?t=' + Date.now();">Refresh Frame</button>
+                    <a class="btn btn-teal" href="/api/captures/live/video/frame" target="_blank">Direct Stream</a>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Active Models & Actuators</h2>
+                <h2>
+                    <span>Active Models & Actuators</span>
+                    <span class="k-tag">Edge Runtime</span>
+                </h2>
                 {models_html}
-                <div style="margin-top: 12px;">
-                    <button class="btn" onclick="fetch('/api/models/predict', {{method:'POST'}}).then(r=>r.json()).then(d=>alert('Inference result: ' + JSON.stringify(d)));">Run Inference Now</button>
+                <div style="margin-top: 14px;">
+                    <button class="btn btn-primary" onclick="fetch('/api/models/predict', {{method:'POST'}}).then(r=>r.json()).then(d=>alert('Inference result: ' + JSON.stringify(d)));">Run Inference Now</button>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Recent Predictions Stream</h2>
+                <h2>
+                    <span>Recent Predictions Stream</span>
+                    <span class="k-tag">Real-Time</span>
+                </h2>
                 <div style="max-height: 240px; overflow-y: auto;">
                     {preds_html}
                 </div>
-                <div style="margin-top: 10px;">
+                <div style="margin-top: 14px;">
                     <button class="btn btn-outline" onclick="location.reload();">Refresh Log</button>
                 </div>
             </div>
 
             <div class="card">
-                <h2>Quick Access & Remote Control</h2>
-                <p style="font-size: 13px; color: #475569; margin: 0 0 10px;">
-                    This node provides an OpenSSH server (port 22) and local REST API on port 5000.
+                <h2>
+                    <span>Quick Access & Connectivity</span>
+                    <span class="k-tag">Local & Remote</span>
+                </h2>
+                <p style="font-size: 13px; color: var(--portal-muted); margin: 0 0 12px; line-height: 1.5;">
+                    This node provides an OpenSSH server (port 22) and local REST API on port 5000 reachable at <code>http://{hostname}:5000</code> or <code>http://localhost:5000</code>.
                 </p>
-                <div style="font-size: 12px; margin-bottom: 6px; font-weight: 600;">Link to ThothCraft Cloud:</div>
+                <div style="font-size: 11px; margin-bottom: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--portal-muted);">Link to ThothCraft Cloud:</div>
                 <pre>thothcraft login
 thothcraft pair</pre>
-                <div style="font-size: 12px; margin-bottom: 6px; font-weight: 600; margin-top: 10px;">Python SDK Local Inspection:</div>
+                <div style="font-size: 11px; margin-bottom: 4px; margin-top: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--portal-muted);">Python SDK Local Inspection:</div>
                 <pre>import thothcraft
-node = thothcraft.local("127.0.0.1")
+node = thothcraft.local("{hostname}")
 print(node.sensors())</pre>
             </div>
         </div>
@@ -457,12 +753,12 @@ def _serve_local_api(device_uuid: str, port: int) -> ThreadingHTTPServer | None:
     try:
         server = ThreadingHTTPServer(("0.0.0.0", port), _make_handler(device_uuid))
     except OSError as exc:
-        print(f"[thothcraftd] local API disabled: {exc}", file=sys.stderr)
+        print(f"[thothcraft] local API disabled: {exc}", file=sys.stderr)
         return None
     threading.Thread(target=server.serve_forever,
-                     name="thothcraftd-api", daemon=True).start()
-    print(f"[thothcraftd] local API on :{port} "
-          f"(thothcraft.local('{os.uname().nodename if hasattr(os, 'uname') else 'localhost'}'))")
+                     name="thothcraft-api", daemon=True).start()
+    hostname = _device_hostname(device_uuid)
+    print(f"[thothcraft] local API on :{port} ({hostname})")
     return server
 
 
@@ -472,10 +768,11 @@ def run(config_path: str = None) -> int:
     from . import probe
 
     device_uuid = _device_uuid()
+    hostname = _device_hostname(device_uuid)
     server = _serve_local_api(device_uuid, LOCAL_API_PORT)
     token = _load_device_token()
     if not token:
-        print("[thothcraftd] No device credential — local API only; "
+        print(f"[thothcraft] No device credential — local API only at http://{hostname}:{LOCAL_API_PORT}; "
               "run `thothcraft pair` to link Brain",
               file=sys.stderr)
 
@@ -483,8 +780,8 @@ def run(config_path: str = None) -> int:
     client = Client(base_url, token=token) if token else None
     capabilities = {k: v[0] for k, v in probe.scan().items()}
 
-    print(f"[thothcraftd] device={device_uuid} brain={base_url}")
-    print(f"[thothcraftd] capabilities: {capabilities}")
+    print(f"[thothcraft] device={device_uuid} ({hostname}) brain={base_url}")
+    print(f"[thothcraft] capabilities: {capabilities}")
 
     stop = False
 
@@ -506,15 +803,16 @@ def run(config_path: str = None) -> int:
                     pass
             time.sleep(2.0)
 
-    threading.Thread(target=_inference_worker, name="thothcraftd-inference", daemon=True).start()
+    threading.Thread(target=_inference_worker, name="thothcraft-inference", daemon=True).start()
 
     while not stop:
         if client is not None:
             try:
                 hb_res = client._http.post_json("/api/device/heartbeat", body={
                     "device_id": device_uuid,
+                    "device_hostname": hostname,
                     "capabilities": capabilities,
-                    "daemon": "thothcraftd",
+                    "daemon": "thothcraft",
                 })
                 deployments = hb_res.get("pending_deployments") if isinstance(hb_res, dict) else None
                 if isinstance(deployments, list):
@@ -528,20 +826,20 @@ def run(config_path: str = None) -> int:
                                     body={"status": "delivered"},
                                 )
                         except Exception as e:
-                            print(f"[thothcraftd] deployment failed: {e}", file=sys.stderr)
+                            print(f"[thothcraft] deployment failed: {e}", file=sys.stderr)
             except Exception as e:
-                print(f"[thothcraftd] heartbeat failed: {e}", file=sys.stderr)
+                print(f"[thothcraft] heartbeat failed: {e}", file=sys.stderr)
         time.sleep(HEARTBEAT_SECONDS)
 
     if server is not None:
         server.shutdown()
-    print("[thothcraftd] stopped")
+    print("[thothcraft] stopped")
     return 0
 
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(prog="thothcraftd")
+    parser = argparse.ArgumentParser(prog="thothcraft daemon")
     parser.add_argument("--config", default=None, help="device.json path")
     args = parser.parse_args()
     raise SystemExit(run(args.config))

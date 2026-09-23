@@ -597,9 +597,17 @@ def shutil_which(cmd):
 
 # ── device ────────────────────────────────────────────────────────────────────
 
+@main.command("daemon")
+@click.option("--config", default=None, help="device.json path")
+def daemon_cmd(config):
+    """Run the ThothCraft device daemon (local API + Brain sync)."""
+    from .daemon import run
+    raise SystemExit(run(config))
+
+
 @main.group()
 def device():
-    """Turn this computer into a Thoth device (thothcraftd)."""
+    """Turn this computer into a Thoth device (thothcraft daemon)."""
 
 
 @device.command("init")
@@ -618,29 +626,29 @@ def device_init(yes):
 
 @device.command("start")
 def device_start():
-    """Start the thothcraftd device daemon."""
-    if sys.platform.startswith("linux") and Path("/usr/lib/systemd/user/thothcraftd.service").exists():
-        subprocess.run(["systemctl", "--user", "start", "thothcraftd"], check=False)
-        click.echo("✓ thothcraftd started via systemd")
+    """Start the thothcraft device daemon."""
+    if sys.platform.startswith("linux") and (Path("/usr/lib/systemd/user/thothcraft.service").exists() or Path("/etc/systemd/user/thothcraft.service").exists()):
+        subprocess.run(["systemctl", "--user", "start", "thothcraft"], check=False)
+        click.echo("✓ thothcraft started via systemd")
         return
     from .daemon import run
-    click.echo("Starting thothcraftd in foreground (Ctrl+C to stop)...")
+    click.echo("Starting thothcraft daemon in foreground (Ctrl+C to stop)...")
     raise SystemExit(run())
 
 
 @device.command("stop")
 def device_stop():
-    """Stop the thothcraftd device daemon."""
+    """Stop the thothcraft device daemon."""
     if sys.platform.startswith("linux"):
-        subprocess.run(["systemctl", "--user", "stop", "thothcraftd"], check=False)
-        click.echo("✓ thothcraftd stopped")
+        subprocess.run(["systemctl", "--user", "stop", "thothcraft"], check=False)
+        click.echo("✓ thothcraft stopped")
     else:
         click.echo("Stop the foreground daemon with Ctrl+C")
 
 
 @device.command("restart")
 def device_restart():
-    """Restart the thothcraftd device daemon."""
+    """Restart the thothcraft device daemon."""
     ctx = click.get_current_context()
     ctx.invoke(device_stop)
     ctx.invoke(device_start)
@@ -651,9 +659,11 @@ def device_restart():
 def device_logs(lines):
     """Show daemon logs."""
     if sys.platform.startswith("linux"):
-        subprocess.run(["journalctl", "--user", "-u", "thothcraftd", "-n", str(lines), "--no-pager"], check=False)
+        subprocess.run(["journalctl", "--user", "-u", "thothcraft", "-n", str(lines), "--no-pager"], check=False)
     else:
-        log = CONFIG_DIR / "thothcraftd.log"
+        log = CONFIG_DIR / "thothcraft.log"
+        if not log.exists():
+            log = CONFIG_DIR / "thothcraftd.log"
         if log.exists():
             click.echo("".join(log.read_text().splitlines(keepends=True)[-lines:]))
         else:

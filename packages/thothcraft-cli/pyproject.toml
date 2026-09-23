@@ -19,7 +19,6 @@ sensors = ["psutil>=5.9", "opencv-python>=4.8", "pyserial>=3.5"]
 
 [project.scripts]
 thothcraft = "thothcraft_cli.main:main"
-thothcraftd = "thothcraft_cli.daemon:main"
 
 [tool.setuptools.packages.find]
 include = ["thothcraft_cli*"]
