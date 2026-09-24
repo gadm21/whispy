@@ -1,7 +1,7 @@
 """Device handles — local and remote parity (§7.4)."""
 
 from .base import DeviceHandle, SensorHandle
-from .local import LocalDevice, LanDevice, local
+from .local import LocalDevice, LanDevice, lan, local
 from .remote import RemoteDevice
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "LanDevice",
     "RemoteDevice",
     "local",
+    "lan",
 ]

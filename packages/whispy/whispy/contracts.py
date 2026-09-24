@@ -119,6 +119,163 @@ class Sensor:
         )
 
 
+# ---------------------------------------------------------------------------
+# Hardware descriptors (adapter discovery)
+# ---------------------------------------------------------------------------
+
+def _short_hash(text: str, length: int = 4) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:length]
+
+
+@dataclass
+class SensorDescriptor:
+    """A physical sensor instance discovered by a :class:`SensorAdapter`.
+
+    ``id`` is stable across reboots whenever the adapter can supply a
+    persistent ``hardware_id`` (USB PnP id, serial, MAC …): it is derived
+    as ``<modality>-<sha1(hardware_id)[:4]>``. Without hardware identity
+    the id falls back to ``<modality>-<index>`` and ``stable`` is False.
+    """
+
+    id: str
+    modality: str                              # camera | microphone | radar | …
+    adapter: str = ""                          # adapter/plugin name
+    name: str = ""                             # human name ("Integrated Camera")
+    hardware_id: str = ""                      # persistent hardware identity
+    capabilities: List[str] = field(default_factory=list)
+    config_schema: Dict[str, Any] = field(default_factory=dict)
+    stable: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def make_id(modality: str, hardware_id: str = "",
+                index: int = 0) -> str:
+        if hardware_id:
+            return f"{modality}-{_short_hash(hardware_id)}"
+        return f"{modality}-{index}"
+
+    def to_sensor(self, online: bool = True) -> "Sensor":
+        """Project this descriptor to the §13 Sensor inventory contract."""
+        return Sensor(
+            id=self.id, type=self.modality, driver=self.adapter,
+            online=online, capabilities=list(self.capabilities),
+            metadata={"hardware_id": self.hardware_id, "name": self.name,
+                      "stable": self.stable, **self.metadata})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SensorDescriptor":
+        return cls(
+            id=str(data.get("id") or ""),
+            modality=str(data.get("modality") or data.get("type") or ""),
+            adapter=str(data.get("adapter") or data.get("driver") or ""),
+            name=str(data.get("name") or ""),
+            hardware_id=str(data.get("hardware_id") or ""),
+            capabilities=list(data.get("capabilities") or []),
+            config_schema=dict(data.get("config_schema") or {}),
+            stable=bool(data.get("stable", False)),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class ActuatorDescriptor:
+    """A physical actuator instance discovered by an ActuatorAdapter."""
+
+    id: str
+    kind: str                                  # speaker | matrix | gpio | …
+    adapter: str = ""
+    name: str = ""
+    hardware_id: str = ""
+    operations: List[str] = field(default_factory=list)   # speak|play|show|…
+    capabilities: List[str] = field(default_factory=list)
+    config_schema: Dict[str, Any] = field(default_factory=dict)
+    stable: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def make_id(kind: str, hardware_id: str = "", index: int = 0) -> str:
+        if hardware_id:
+            return f"{kind}-{_short_hash(hardware_id)}"
+        return f"{kind}-{index}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ActuatorDescriptor":
+        return cls(
+            id=str(data.get("id") or ""),
+            kind=str(data.get("kind") or data.get("type") or ""),
+            adapter=str(data.get("adapter") or ""),
+            name=str(data.get("name") or ""),
+            hardware_id=str(data.get("hardware_id") or ""),
+            operations=list(data.get("operations") or []),
+            capabilities=list(data.get("capabilities") or []),
+            config_schema=dict(data.get("config_schema") or {}),
+            stable=bool(data.get("stable", False)),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class ActuatorCommand:
+    """A single operation request sent to an actuator handle.
+
+    Wire-safe: serializes to ``{"operation": ..., "params": {...}}`` for
+    the LAN ``POST /api/actuators/{id}/actions`` endpoint.
+    """
+
+    operation: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    timeout_seconds: float = 30.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"operation": self.operation, "params": self.params,
+                "timeout_seconds": self.timeout_seconds}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ActuatorCommand":
+        if isinstance(data, ActuatorCommand):
+            return data
+        return cls(
+            operation=str(data.get("operation") or data.get("op") or ""),
+            params=dict(data.get("params") or {}),
+            timeout_seconds=float(data.get("timeout_seconds") or 30.0),
+        )
+
+
+@dataclass
+class ModelBinding:
+    """Binds one named model input to a concrete sensor source.
+
+    ``source`` selects where the SensorHandle comes from:
+    ``local`` (this device), ``lan`` (another Thoth node), ``brain``
+    (via Brain relay), or ``fixture``/``replay`` (recorded data).
+    """
+
+    input_name: str
+    sensor_id: str
+    source: str = "local"                      # local | lan | brain | fixture
+    source_device: str = ""                    # device id / host for remote
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ModelBinding":
+        return cls(
+            input_name=str(data.get("input_name") or data.get("name") or ""),
+            sensor_id=str(data.get("sensor_id") or data.get("sensor") or ""),
+            source=str(data.get("source") or "local"),
+            source_device=str(data.get("source_device") or ""),
+            config=dict(data.get("config") or {}),
+        )
+
+
 @dataclass
 class Device:
     """Device contract (§12). LAN IPs are diagnostics, never identity."""
@@ -304,17 +461,24 @@ class Prediction:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     device_id: str = ""
     runtime_model_id: str = ""
+    task: str = ""                               # e.g. person_presence
     timestamp: float = field(default_factory=time.time)
     scores: Dict[str, float] = field(default_factory=dict)
     source_window: Optional[Dict[str, Any]] = None
     people_count: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def attributes(self) -> Dict[str, Any]:
+        """Alias for ``metadata`` — model-specific result attributes."""
+        return self.metadata
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "device_id": self.device_id,
             "runtime_model_id": self.runtime_model_id,
+            "task": self.task,
             "timestamp": self.timestamp,
             "label": self.label,
             "confidence": self.confidence,
@@ -330,6 +494,7 @@ class Prediction:
             id=str(data.get("id") or uuid.uuid4().hex),
             device_id=str(data.get("device_id") or ""),
             runtime_model_id=str(data.get("runtime_model_id") or ""),
+            task=str(data.get("task") or ""),
             timestamp=float(data.get("timestamp") or time.time()),
             label=str(data.get("label") or ""),
             confidence=float(data.get("confidence") or 0.0),
@@ -454,19 +619,83 @@ class Action:
 
 @dataclass
 class ModelInput:
-    sensor: str
+    """One named model input.
+
+    Legacy form (still parsed)::
+
+        {"sensor": "radar", "window_seconds": 2.0,
+         "required_sample_rate": 10.0}
+
+    Capability form::
+
+        {"name": "audio", "modality": "microphone",
+         "capabilities": ["pcm_audio"],
+         "constraints": {"sample_rate": 16000},
+         "window_seconds": 4.0}
+
+    Compatibility becomes "does this sensor satisfy what the model
+    needs" rather than "is this sensor called microphone".
+    """
+
+    sensor: str = ""                           # legacy: sensor id/modality
     window_seconds: float = 1.0
     required_sample_rate: Optional[float] = None
+    name: str = ""                             # input port name ("audio")
+    modality: str = ""                         # required modality
+    capabilities: List[str] = field(default_factory=list)
+    constraints: Dict[str, Any] = field(default_factory=dict)
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        # Legacy manifests only set ``sensor``; treat it as the modality
+        # and default the port name so bindings can reference it.
+        if self.sensor and not self.modality:
+            self.modality = self.sensor
+        if not self.name:
+            self.name = self.modality or self.sensor
+
+    def matches(self, sensor: "Sensor") -> bool:
+        """Whether a Sensor contract satisfies this input's needs."""
+        if self.modality and sensor.type != self.modality:
+            return False
+        missing = [c for c in self.capabilities
+                   if c not in sensor.capabilities]
+        if missing:
+            return False
+        rate_req = self.constraints.get("sample_rate") or \
+            self.required_sample_rate
+        if rate_req and sensor.sample_rate and \
+                float(sensor.sample_rate) != float(rate_req):
+            return False
+        return True
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "sensor": self.sensor,
+            "window_seconds": self.window_seconds,
+            "required_sample_rate": self.required_sample_rate,
+            "name": self.name,
+            "modality": self.modality,
+            "capabilities": self.capabilities,
+            "constraints": self.constraints,
+            "required": self.required,
+        }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ModelInput":
+        window = data.get("window_seconds", data.get("window"))
+        if isinstance(window, Mapping):
+            window = window.get("seconds")
         return cls(
             sensor=str(data.get("sensor") or ""),
-            window_seconds=float(data.get("window_seconds") or 1.0),
+            window_seconds=float(window or 1.0),
             required_sample_rate=data.get("required_sample_rate"),
+            name=str(data.get("name") or ""),
+            modality=str(data.get("modality") or ""),
+            capabilities=list(data.get("capabilities")
+                              or data.get("requires") or []),
+            constraints=dict(data.get("constraints") or {}),
+            required=bool(data.get("required", True)),
         )
 
 
@@ -502,14 +731,22 @@ class ModelManifest:
                 f"got {self.format!r}")
         if not self.name:
             errors.append("name is required")
-        if self.processor not in PROCESSOR_TYPES:
+        known = set(PROCESSOR_TYPES)
+        try:
+            from .plugins import PluginRegistry
+            known.update(PluginRegistry().discover_models().keys())
+        except Exception:
+            pass
+        if self.processor not in known:
             errors.append(
-                f"processor must be one of {PROCESSOR_TYPES}, got {self.processor!r}")
+                f"processor must be a built-in {PROCESSOR_TYPES} or an "
+                f"installed whispy.models plugin, got {self.processor!r}")
         if not self.inputs:
             errors.append("at least one input is required")
         for i, inp in enumerate(self.inputs):
-            if not inp.sensor:
-                errors.append(f"inputs[{i}].sensor is required")
+            if not (inp.sensor or inp.modality or inp.name):
+                errors.append(
+                    f"inputs[{i}] requires a sensor, modality, or name")
             if inp.window_seconds <= 0:
                 errors.append(f"inputs[{i}].window_seconds must be > 0")
         if self.artifact_sha256 and len(self.artifact_sha256) != 64:

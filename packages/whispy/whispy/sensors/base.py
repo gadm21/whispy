@@ -1,14 +1,25 @@
-"""Whispy sensor driver contract.
+"""Whispy sensor driver/adapter contracts.
 
 A driver produces real :class:`~whispy.contracts.SensorSample` streams —
 never availability booleans. Health is reported separately via
 :meth:`SensorDriver.health` and ``Sensor.online``.
 
-Third-party drivers register under the ``whispy.sensors`` entry-point
+Two plugin interfaces live here:
+
+- **SensorDriver** (legacy) — one driver ↔ one sensor:
+  ``discover()`` → ``open(config)`` → ``stream()`` → ``close()``.
+- **SensorAdapter** (current) — one adapter ↔ zero or more physical
+  sensors: ``discover()`` → ``list[SensorDescriptor]`` then
+  ``connect(descriptor, config)`` → ``SensorHandle``.
+
+:class:`SensorDriverAdapter` wraps any legacy driver into the adapter
+interface so existing drivers keep working during the migration.
+
+Third-party plugins register under the ``whispy.sensors`` entry-point
 group::
 
     [project.entry-points."whispy.sensors"]
-    realsense = "whispy_sensor_realsense:RealSenseDriver"
+    realsense = "whispy_sensor_realsense:RealSenseAdapter"
 """
 
 from __future__ import annotations
@@ -16,9 +27,9 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, Type
+from typing import Any, Dict, Iterator, List, Optional, Type, Union
 
-from ..contracts import SensorSample
+from ..contracts import SensorDescriptor, SensorSample
 
 ENTRY_POINT_GROUP = "whispy.sensors"
 
@@ -77,18 +88,178 @@ class SensorDriver(ABC):
         raise NotImplementedError(f"{type(self).__name__} has no calibration")
 
 
+class SensorAdapter(ABC):
+    """New-style sensor adapter — discovers physical sensor instances.
+
+    Lifecycle::
+
+        adapter.discover()          → list[SensorDescriptor] (0..n)
+        adapter.connect(desc, cfg)  → SensorHandle (opened lazily)
+        adapter.close()             → release adapter-level resources
+
+    Unlike :class:`SensorDriver`, an adapter is *not* bound to a single
+    sensor: a camera adapter discovers every attached camera, a Sense
+    HAT adapter exposes imu/temperature/humidity/pressure descriptors.
+    """
+
+    @abstractmethod
+    def metadata(self) -> SensorMeta:
+        """Static adapter metadata."""
+
+    @abstractmethod
+    def discover(self) -> List[SensorDescriptor]:
+        """Enumerate physical sensors this adapter can serve (may be [])."""
+
+    @abstractmethod
+    def connect(self, descriptor: SensorDescriptor,
+                config: Optional[Dict[str, Any]] = None):
+        """Open one discovered sensor; returns a SensorHandle."""
+
+    def health(self) -> HealthReport:
+        return HealthReport()
+
+    def close(self) -> None:
+        """Release adapter-level resources; safe to call twice."""
+
+
+class _DriverSensorHandle:
+    """SensorHandle over a legacy driver's open()/stream() pair.
+
+    Defined here (not devices.base) to avoid an import cycle; satisfies
+    the SensorHandle interface structurally.
+    """
+
+    def __init__(self, driver: "SensorDriver", descriptor: SensorDescriptor,
+                 config: Optional[Dict[str, Any]] = None):
+        self._driver = driver
+        self._descriptor = descriptor
+        self._config = dict(config or {})
+        self._opened = False
+
+    @property
+    def info(self):
+        return self._descriptor.to_sensor()
+
+    @property
+    def descriptor(self) -> SensorDescriptor:
+        return self._descriptor
+
+    def _ensure_open(self) -> None:
+        if not self._opened:
+            self._driver.open(self._config)
+            self._opened = True
+
+    def stream(self, max_samples: Optional[int] = None) -> Iterator[SensorSample]:
+        self._ensure_open()
+        count = 0
+        for sample in self._driver.stream():
+            if not sample.sensor_id or sample.sensor_id.endswith("-0") \
+                    and sample.sensor_id != self._descriptor.id:
+                sample.sensor_id = self._descriptor.id
+            yield sample
+            count += 1
+            if max_samples is not None and count >= max_samples:
+                return
+
+    def latest(self) -> Optional[SensorSample]:
+        for sample in self.stream(max_samples=1):
+            return sample
+        return None
+
+    def close(self) -> None:
+        if self._opened:
+            try:
+                self._driver.close()
+            finally:
+                self._opened = False
+
+
+class SensorDriverAdapter(SensorAdapter):
+    """Wraps a legacy :class:`SensorDriver` into the adapter interface.
+
+    ``discover()`` maps the driver's ``discover()`` dicts × advertised
+    modalities to :class:`SensorDescriptor` objects. When a discovered
+    device reports a ``hardware_id`` the descriptor id is stable
+    (``<modality>-<hash>``); otherwise it falls back to the historical
+    ``<modality>-<index>`` form so existing inventory ids are preserved.
+    """
+
+    def __init__(self, driver: Union[SensorDriver, Type[SensorDriver]],
+                 name: str = ""):
+        self._driver = driver() if isinstance(driver, type) else driver
+        self._name = name or self._safe_meta().name or \
+            type(self._driver).__name__
+
+    def _safe_meta(self) -> SensorMeta:
+        try:
+            return self._driver.metadata()
+        except Exception:
+            return SensorMeta(name=type(self._driver).__name__)
+
+    @property
+    def driver(self) -> SensorDriver:
+        return self._driver
+
+    def metadata(self) -> SensorMeta:
+        return self._safe_meta()
+
+    def discover(self) -> List[SensorDescriptor]:
+        meta = self._safe_meta()
+        modalities = list(meta.modalities) or [self._name]
+        try:
+            found = self._driver.discover()
+        except Exception:
+            found = []
+        out: List[SensorDescriptor] = []
+        for index, dev in enumerate(found or [{}]):
+            dev = dict(dev or {})
+            hw = str(dev.get("hardware_id") or dev.get("serial") or "")
+            dev_id = str(dev.get("id") or "")
+            for modality in modalities:
+                if hw:
+                    sid = SensorDescriptor.make_id(modality, hw)
+                elif dev_id and len(modalities) == 1:
+                    sid = dev_id                      # preserve legacy id
+                else:
+                    sid = SensorDescriptor.make_id(
+                        modality, index=index)
+                out.append(SensorDescriptor(
+                    id=sid, modality=modality, adapter=self._name,
+                    name=str(dev.get("name") or meta.name),
+                    hardware_id=hw,
+                    capabilities=list(meta.modalities),
+                    config_schema=dict(meta.config_schema),
+                    stable=bool(hw),
+                    metadata={"legacy_driver": True,
+                              "discovered": dev},
+                ))
+        return out
+
+    def connect(self, descriptor: SensorDescriptor,
+                config: Optional[Dict[str, Any]] = None) -> _DriverSensorHandle:
+        return _DriverSensorHandle(self._driver, descriptor, config)
+
+    def health(self) -> HealthReport:
+        try:
+            return self._driver.health()
+        except Exception as exc:
+            return HealthReport(status="error", detail=str(exc))
+
+    def close(self) -> None:
+        try:
+            self._driver.close()
+        except Exception:
+            pass
+
+
 def installed_drivers() -> Dict[str, Type[SensorDriver]]:
-    """Discover all drivers registered under the entry-point group."""
-    from importlib.metadata import entry_points
+    """Discover legacy drivers registered under the entry-point group."""
+    from ..plugins import registry
 
     drivers: Dict[str, Type[SensorDriver]] = {}
-    for ep in entry_points(group=ENTRY_POINT_GROUP):
-        try:
-            cls = ep.load()
-        except Exception:
-            continue
-        if isinstance(cls, type) and issubclass(cls, SensorDriver):
-            drivers[ep.name] = cls
+    for name, info in registry().discover_sensors().items():
+        if info.available and info.kind == "driver" and info.cls is not None:
+            drivers[name] = info.cls
     return drivers
 
 
@@ -110,6 +281,39 @@ def all_drivers() -> Dict[str, Type[SensorDriver]]:
     drivers = builtin_drivers()
     drivers.update(installed_drivers())
     return drivers
+
+
+def installed_adapters() -> Dict[str, SensorAdapter]:
+    """Instantiate every sensor plugin as a :class:`SensorAdapter`.
+
+    Entry points that export a legacy ``SensorDriver`` are wrapped in
+    :class:`SensorDriverAdapter`; plugins that fail to load are skipped
+    (their error is visible via ``PluginRegistry.discover_sensors()``).
+    """
+    from ..plugins import registry
+
+    out: Dict[str, SensorAdapter] = {}
+    for name, info in registry().discover_sensors().items():
+        if not info.available or info.cls is None:
+            continue
+        try:
+            if info.kind == "adapter":
+                out[name] = info.cls()
+            elif info.kind == "driver":
+                out[name] = SensorDriverAdapter(info.cls, name=name)
+        except Exception:
+            continue
+    return out
+
+
+def all_adapters() -> Dict[str, SensorAdapter]:
+    """Built-in drivers (wrapped) merged with entry-point adapters."""
+    out: Dict[str, SensorAdapter] = {
+        name: SensorDriverAdapter(cls, name=name)
+        for name, cls in builtin_drivers().items()
+    }
+    out.update(installed_adapters())
+    return out
 
 
 def check_driver(driver: SensorDriver, max_samples: int = 5,

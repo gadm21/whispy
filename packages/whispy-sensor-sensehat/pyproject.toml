@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-sensor-sensehat"
+version = "0.1.0"
+description = "Raspberry Pi Sense HAT sensor adapter for Whispy (IMU, temperature, humidity, pressure, joystick)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["whispy>=0.1.0"]
+
+[project.optional-dependencies]
+hardware = ["sense-hat>=2.6; platform_system=='Linux'"]
+
+[project.entry-points."whispy.sensors"]
+sensehat = "whispy_sensor_sensehat:SenseHatSensorAdapter"
+
+[tool.setuptools.packages.find]
+include = ["whispy_sensor_sensehat*"]

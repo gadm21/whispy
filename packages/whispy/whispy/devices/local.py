@@ -1,16 +1,20 @@
-"""Local device — sensors attached to this machine or a LAN Thoth node.
+"""Local device — sensors/actuators on this machine or a LAN Thoth node.
 
 Two modes:
 
-- **In-process** (``whispy.local()`` with no host): enumerate drivers
+- **In-process** (``whispy.local()`` with no host): enumerate adapters
   installed on this machine and stream directly from hardware.
-- **LAN node** (``whispy.local("thoth-pi-a.local")``): talk to a Thoth
+- **LAN node** (``whispy.lan("rpi1.local", token=…)``): talk to a Thoth
   daemon's authenticated local API over HTTP.
+
+Sensor inventory is descriptor-based: each adapter's ``discover()``
+returns :class:`SensorDescriptor` objects representing *physical*
+instances (``camera-f91a``), not modalities. ``sensor("camera")``
+resolves only when exactly one camera is present.
 """
 
 from __future__ import annotations
 
-import itertools
 import json
 import platform
 import time
@@ -20,85 +24,174 @@ import urllib.request
 import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
-from ..contracts import Device, Sensor, SensorSample
+from ..contracts import (
+    ActionResult, ActuatorCommand, ActuatorDescriptor, Device, Sensor,
+    SensorDescriptor, SensorSample,
+)
 from ..errors import APIError
-from ..sensors.base import SensorDriver, all_drivers
+from ..sensors.base import (
+    SensorAdapter, SensorDriver, SensorDriverAdapter, all_adapters,
+)
 from .base import DeviceHandle, SensorHandle
 
 
 class _LocalSensorHandle(SensorHandle):
-    def __init__(self, driver: SensorDriver, sensor_id: str,
-                 sensor_type: str, device_id: str):
-        self._driver = driver
-        self._sensor_id = sensor_id
-        self._sensor_type = sensor_type
+    """Lazily connects an adapter to one descriptor on first stream."""
+
+    def __init__(self, adapter: SensorAdapter, descriptor: SensorDescriptor,
+                 device_id: str, config: Optional[Dict[str, Any]] = None):
+        self._adapter = adapter
+        self._descriptor = descriptor
         self._device_id = device_id
-        self._seq = itertools.count()
+        self._config = dict(config or {})
+        self._inner = None
+
+    @property
+    def descriptor(self) -> SensorDescriptor:
+        return self._descriptor
 
     @property
     def info(self) -> Sensor:
-        meta = self._driver.metadata()
-        return Sensor(
-            id=self._sensor_id,
-            type=self._sensor_type,
-            driver=meta.name,
-            driver_version=meta.version,
-            online=True,
-            capabilities=list(meta.modalities),
-        )
+        return self._descriptor.to_sensor()
+
+    def _connect(self):
+        if self._inner is None:
+            self._inner = self._adapter.connect(self._descriptor, self._config)
+        return self._inner
 
     def stream(self, max_samples: Optional[int] = None) -> Iterator[SensorSample]:
+        handle = self._connect()
         count = 0
-        for sample in self._driver.stream():
+        for sample in handle.stream():
             if sample.device_id in ("", "local", "fixture-device"):
                 sample.device_id = self._device_id
+            if not sample.sensor_id:
+                sample.sensor_id = self._descriptor.id
             yield sample
             count += 1
             if max_samples is not None and count >= max_samples:
                 return
 
+    def close(self) -> None:
+        if self._inner is not None and hasattr(self._inner, "close"):
+            try:
+                self._inner.close()
+            except Exception:
+                pass
+            self._inner = None
+
+
+class _LocalActuatorHandle:
+    """Lazily connects an actuator adapter to one descriptor."""
+
+    def __init__(self, adapter, descriptor: ActuatorDescriptor,
+                 config: Optional[Dict[str, Any]] = None):
+        self._adapter = adapter
+        self._descriptor = descriptor
+        self._config = dict(config or {})
+        self._inner = None
+
+    @property
+    def descriptor(self) -> ActuatorDescriptor:
+        return self._descriptor
+
+    @property
+    def info(self) -> ActuatorDescriptor:
+        return self._descriptor
+
+    def _connect(self):
+        if self._inner is None:
+            self._inner = self._adapter.connect(self._descriptor, self._config)
+        return self._inner
+
+    def execute(self, command) -> ActionResult:
+        cmd = command if isinstance(command, ActuatorCommand) \
+            else ActuatorCommand.from_dict(command)
+        return self._connect().execute(cmd)
+
+    def supports(self, operation: str) -> bool:
+        return operation in (self._descriptor.operations or [])
+
+    def close(self) -> None:
+        if self._inner is not None and hasattr(self._inner, "close"):
+            try:
+                self._inner.close()
+            except Exception:
+                pass
+            self._inner = None
+
 
 class LocalDevice(DeviceHandle):
-    """Sensors on this machine via installed Whispy drivers."""
+    """Sensors/actuators on this machine via installed Whispy plugins.
+
+    ``drivers`` accepts legacy ``SensorDriver`` instances/classes (wrapped
+    in :class:`SensorDriverAdapter`); ``adapters`` accepts
+    ``SensorAdapter`` instances; ``actuator_adapters`` accepts
+    ``ActuatorAdapter`` instances. When all are omitted, installed
+    plugins are auto-detected.
+    """
 
     def __init__(self, device_id: Optional[str] = None,
-                 drivers: Optional[Dict[str, SensorDriver]] = None):
+                 drivers: Optional[Dict[str, Any]] = None,
+                 adapters: Optional[Dict[str, SensorAdapter]] = None,
+                 actuator_adapters: Optional[Dict[str, Any]] = None):
         self._device_id = device_id or self._stable_id()
-        self._drivers: Dict[str, SensorDriver] = dict(drivers or {})
-        self._opened: List[SensorDriver] = []
-        if drivers is None:
+        self._adapters: Dict[str, SensorAdapter] = {}
+        self._act_adapters: Dict[str, Any] = dict(actuator_adapters or {})
+        self._configs: Dict[str, Dict[str, Any]] = {}
+        self._handles: List[Any] = []
+        if drivers is None and adapters is None:
             self._autodetect()
+        else:
+            for name, drv in (drivers or {}).items():
+                self._adapters[name] = drv if isinstance(drv, SensorAdapter) \
+                    else SensorDriverAdapter(drv, name=name)
+            for name, adp in (adapters or {}).items():
+                self._adapters[name] = adp
+        if actuator_adapters is None and drivers is None and adapters is None:
+            self._autodetect_actuators()
 
     @staticmethod
     def _stable_id() -> str:
         return f"local-{uuid.getnode():012x}"
 
     def _autodetect(self) -> None:
-        for name, cls in all_drivers().items():
+        for name, adapter in all_adapters().items():
             try:
-                driver = cls()
-                found = driver.discover()
+                found = adapter.discover()
             except Exception:
                 continue
             if found:
-                self._drivers[name] = driver
+                self._adapters[name] = adapter
 
-    def open(self, configs: Optional[Dict[str, Dict[str, Any]]] = None) -> "LocalDevice":
-        for name, driver in self._drivers.items():
+    def _autodetect_actuators(self) -> None:
+        from ..actuators.base import installed_actuator_adapters
+        for name, adapter in installed_actuator_adapters().items():
             try:
-                driver.open((configs or {}).get(name, {}))
-                self._opened.append(driver)
+                found = adapter.discover()
             except Exception:
                 continue
+            if found:
+                self._act_adapters[name] = adapter
+
+    def open(self, configs: Optional[Dict[str, Dict[str, Any]]] = None) -> "LocalDevice":
+        """Store per-adapter configs; hardware opens lazily on connect."""
+        self._configs.update(configs or {})
         return self
 
     def close(self) -> None:
-        for driver in self._opened:
+        for handle in self._handles:
             try:
-                driver.close()
+                handle.close()
             except Exception:
                 pass
-        self._opened.clear()
+        self._handles.clear()
+        for adapter in list(self._adapters.values()) + \
+                list(self._act_adapters.values()):
+            try:
+                adapter.close()
+            except Exception:
+                pass
 
     @property
     def info(self) -> Device:
@@ -112,45 +205,121 @@ class LocalDevice(DeviceHandle):
             sensors=self.sensors(),
         )
 
-    def _inventory(self) -> List[Dict[str, Any]]:
-        """One entry per advertised sensor: id, modality, driver, handle."""
-        out: List[Dict[str, Any]] = []
-        for name, driver in self._drivers.items():
+    # -- sensors ---------------------------------------------------------------
+    def sensor_descriptors(self) -> List[SensorDescriptor]:
+        """Physical sensor inventory from every adapter's discover()."""
+        out: List[SensorDescriptor] = []
+        for name, adapter in self._adapters.items():
             try:
-                meta = driver.metadata()
+                for desc in adapter.discover():
+                    if not desc.adapter:
+                        desc.adapter = name
+                    out.append(desc)
             except Exception:
                 continue
-            for modality in meta.modalities or (name,):
-                out.append({
-                    "id": f"{modality}-0",
-                    "modality": modality,
-                    "driver_name": name,
-                    "driver": driver,
-                    "meta": meta,
-                })
         return out
 
     def sensors(self) -> List[Sensor]:
-        out: List[Sensor] = []
-        for item in self._inventory():
-            meta = item["meta"]
-            out.append(Sensor(
-                id=item["id"], type=item["modality"],
-                driver=meta.name, driver_version=meta.version,
-                online=True, capabilities=list(meta.modalities)))
-        return out
+        return [d.to_sensor() for d in self.sensor_descriptors()]
 
     def sensor(self, sensor_id_or_type: str) -> SensorHandle:
-        # Accept the exact inventory id (``system-0``), a modality
-        # (``system``), or a driver name — all resolve to a live handle.
-        for item in self._inventory():
-            if sensor_id_or_type in (item["id"], item["modality"],
-                                     item["driver_name"]):
-                return _LocalSensorHandle(
-                    item["driver"], item["id"],
-                    item["modality"], self._device_id)
-        raise KeyError(f"no local sensor {sensor_id_or_type!r}; "
-                       f"available: {[s.id for s in self.sensors()]}")
+        """Resolve by descriptor id, name, adapter name, or modality.
+
+        A modality (``"camera"``) resolves only when exactly one sensor
+        matches — otherwise the error lists the candidate ids so the
+        caller can pick a stable id.
+        """
+        key = sensor_id_or_type
+        descriptors = self.sensor_descriptors()
+
+        for desc in descriptors:
+            if key in (desc.id, desc.name) and (desc.id or desc.name):
+                return self._sensor_handle(desc)
+
+        matches = [d for d in descriptors if d.modality == key]
+        if len(matches) == 1:
+            return self._sensor_handle(matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous sensor {key!r}: {[d.id for d in matches]}; "
+                f"use a stable id")
+
+        for name, adapter in self._adapters.items():
+            if name == key:
+                try:
+                    found = adapter.discover()
+                except Exception:
+                    found = []
+                if found:
+                    return self._sensor_handle(found[0])
+        raise KeyError(f"no local sensor {key!r}; "
+                       f"available: {[d.id for d in descriptors]}")
+
+    def _sensor_handle(self, desc: SensorDescriptor) -> _LocalSensorHandle:
+        adapter = self._adapters.get(desc.adapter) or \
+            self._adapters.get(desc.adapter or "")
+        if adapter is None:
+            # Descriptor came from an adapter keyed differently; find it.
+            for name, candidate in self._adapters.items():
+                try:
+                    if any(d.id == desc.id for d in candidate.discover()):
+                        adapter = candidate
+                        break
+                except Exception:
+                    continue
+        if adapter is None:
+            raise KeyError(f"no adapter for sensor {desc.id!r}")
+        handle = _LocalSensorHandle(
+            adapter, desc, self._device_id,
+            config=self._configs.get(desc.adapter))
+        self._handles.append(handle)
+        return handle
+
+    # -- actuators -------------------------------------------------------------
+    def actuators(self) -> List[ActuatorDescriptor]:
+        out: List[ActuatorDescriptor] = []
+        for name, adapter in self._act_adapters.items():
+            try:
+                for desc in adapter.discover():
+                    if not desc.adapter:
+                        desc.adapter = name
+                    out.append(desc)
+            except Exception:
+                continue
+        return out
+
+    def actuator(self, actuator_id_or_kind: str) -> _LocalActuatorHandle:
+        key = actuator_id_or_kind
+        descriptors = self.actuators()
+        for desc in descriptors:
+            if key in (desc.id, desc.name) and (desc.id or desc.name):
+                return self._actuator_handle(desc)
+        matches = [d for d in descriptors if d.kind == key]
+        if len(matches) == 1:
+            return self._actuator_handle(matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous actuator {key!r}: {[d.id for d in matches]}; "
+                f"use a stable id")
+        raise KeyError(f"no local actuator {key!r}; "
+                       f"available: {[d.id for d in descriptors]}")
+
+    def _actuator_handle(self, desc: ActuatorDescriptor) -> _LocalActuatorHandle:
+        adapter = self._act_adapters.get(desc.adapter)
+        if adapter is None:
+            for name, candidate in self._act_adapters.items():
+                try:
+                    if any(d.id == desc.id for d in candidate.discover()):
+                        adapter = candidate
+                        break
+                except Exception:
+                    continue
+        if adapter is None:
+            raise KeyError(f"no adapter for actuator {desc.id!r}")
+        handle = _LocalActuatorHandle(
+            adapter, desc, config=self._configs.get(desc.adapter))
+        self._handles.append(handle)
+        return handle
 
 
 class _Http:
@@ -191,6 +360,9 @@ class _Http:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as res:
                 return json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise APIError(f"local request failed: {path}: HTTP {exc.code}",
+                           status_code=exc.code) from exc
         except Exception as exc:
             raise APIError(f"local request failed: {path}: {exc}") from exc
 
@@ -208,7 +380,13 @@ class _LanSensorHandle(SensorHandle):
 
     def stream(self, max_samples: Optional[int] = None,
                poll_s: float = 0.1) -> Iterator[SensorSample]:
-        cursor = ""
+        # Prime the cursor: the first tail response carries the daemon's
+        # whole ring buffer (minutes of history). A stream is live-only —
+        # adopt the cursor and discard the backlog so consumers like
+        # capture_window see only samples produced after stream start.
+        body = self._http.get_json(
+            f"/api/sensors/{self._info.id}/tail", {"cursor": ""})
+        cursor = str(body.get("cursor") or "")
         count = 0
         while max_samples is None or count < max_samples:
             body = self._http.get_json(
@@ -223,6 +401,35 @@ class _LanSensorHandle(SensorHandle):
                 time.sleep(poll_s)
 
 
+class _LanActuatorHandle:
+    """Executes commands on a LAN node's actuator via the local API."""
+
+    def __init__(self, http: _Http, descriptor: ActuatorDescriptor):
+        self._http = http
+        self._info = descriptor
+
+    @property
+    def info(self) -> ActuatorDescriptor:
+        return self._info
+
+    @property
+    def descriptor(self) -> ActuatorDescriptor:
+        return self._info
+
+    def execute(self, command) -> ActionResult:
+        cmd = command if isinstance(command, ActuatorCommand) \
+            else ActuatorCommand.from_dict(command)
+        body = self._http.post_json(
+            f"/api/actuators/{self._info.id}/actions", cmd.to_dict())
+        return ActionResult.from_dict(body)
+
+    def supports(self, operation: str) -> bool:
+        return operation in (self._info.operations or [])
+
+    def close(self) -> None:
+        pass
+
+
 class LanDevice(DeviceHandle):
     """A Thoth node reachable on the LAN via its authenticated local API."""
 
@@ -230,7 +437,11 @@ class LanDevice(DeviceHandle):
                  token: Optional[str] = None, timeout: int = 15):
         if not host.startswith(("http://", "https://")):
             host = f"http://{host}"
-        self._http = _Http(f"{host}:{port}", token=token, timeout=timeout)
+        elif ":" not in host.split("://", 1)[1]:
+            host = f"{host}:{port}"
+        self._http = _Http(host if host.rsplit(":", 1)[-1].isdigit()
+                           else f"{host}:{port}", token=token,
+                           timeout=timeout)
         self.host = host
 
     @property
@@ -242,11 +453,59 @@ class LanDevice(DeviceHandle):
         items = payload.get("sensors") if isinstance(payload, dict) else payload
         return [Sensor.from_dict(s) for s in (items or [])]
 
+    def sensor_descriptors(self) -> List[SensorDescriptor]:
+        try:
+            payload = self._http.get_json("/api/sensors",
+                                          {"descriptors": "1"})
+            items = payload.get("descriptors")
+            if items:
+                return [SensorDescriptor.from_dict(d) for d in items]
+        except APIError:
+            pass
+        return [SensorDescriptor(
+            id=s.id, modality=s.type, adapter=s.driver,
+            capabilities=list(s.capabilities),
+            hardware_id=str(s.metadata.get("hardware_id") or ""),
+            name=str(s.metadata.get("name") or ""),
+            stable=bool(s.metadata.get("stable")),
+        ) for s in self.sensors()]
+
     def sensor(self, sensor_id_or_type: str) -> SensorHandle:
-        for s in self.sensors():
-            if s.id == sensor_id_or_type or s.type == sensor_id_or_type:
-                return _LanSensorHandle(self._http, s)
-        raise KeyError(f"no sensor {sensor_id_or_type!r} on {self.host}")
+        matches = [s for s in self.sensors()
+                   if s.id == sensor_id_or_type
+                   or s.metadata.get("name") == sensor_id_or_type]
+        if not matches:
+            matches = [s for s in self.sensors()
+                       if s.type == sensor_id_or_type]
+        if len(matches) == 1:
+            return _LanSensorHandle(self._http, matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous sensor {sensor_id_or_type!r} on {self.host}: "
+                f"{[s.id for s in matches]}; use a stable id")
+        raise KeyError(
+            f"no sensor {sensor_id_or_type!r} on {self.host}")
+
+    def actuators(self) -> List[ActuatorDescriptor]:
+        payload = self._http.get_json("/api/actuators")
+        items = payload.get("actuators") if isinstance(payload, dict) else payload
+        return [ActuatorDescriptor.from_dict(a) for a in (items or [])]
+
+    def actuator(self, actuator_id_or_kind: str) -> _LanActuatorHandle:
+        descriptors = self.actuators()
+        for desc in descriptors:
+            if actuator_id_or_kind in (desc.id, desc.name) \
+                    and (desc.id or desc.name):
+                return _LanActuatorHandle(self._http, desc)
+        matches = [d for d in descriptors if d.kind == actuator_id_or_kind]
+        if len(matches) == 1:
+            return _LanActuatorHandle(self._http, matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous actuator {actuator_id_or_kind!r} on "
+                f"{self.host}: {[d.id for d in matches]}")
+        raise KeyError(
+            f"no actuator {actuator_id_or_kind!r} on {self.host}")
 
     def status(self) -> Dict[str, Any]:
         return self._http.get_json("/api/status")
@@ -264,12 +523,22 @@ def local(host: Optional[str] = None, port: int = 5000,
           token: Optional[str] = None, **kwargs: Any) -> DeviceHandle:
     """Connect to local sensing.
 
-    ``local()`` → in-process drivers on this machine (auto-opened).
-    ``local("thoth-pi-a.local")`` → LAN node via authenticated local API.
+    ``local()`` → in-process adapters on this machine.
+    ``local("rpi1.local")`` → LAN node via authenticated local API.
     """
     if host is None:
         return LocalDevice(**kwargs).open()
     return LanDevice(host, port=port, token=token)
 
 
-__all__ = ["LocalDevice", "LanDevice", "local"]
+def lan(host: str, port: int = 5000, token: Optional[str] = None,
+        timeout: int = 15) -> LanDevice:
+    """Connect to a Thoth node on the LAN by hostname/IP.
+
+    ``whispy.lan("rpi1.local", token=…)`` is identical to
+    ``whispy.local("rpi1.local", …)`` but reads explicitly.
+    """
+    return LanDevice(host, port=port, token=token, timeout=timeout)
+
+
+__all__ = ["LocalDevice", "LanDevice", "local", "lan"]

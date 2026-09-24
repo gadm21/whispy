@@ -74,8 +74,18 @@ def create_processor(manifest_or_config: Dict[str, Any],
         return TorchScriptProcessor(manifest_or_config, artifact=artifact)
     if kind == "fusion":
         return FusionProcessor(manifest_or_config)
+    # Plugin processors registered under the whispy.models entry-point
+    # group are valid deployment targets too.
+    try:
+        from ..models.registry import installed_models
+        cls = installed_models().get(kind)
+        if cls is not None:
+            return cls(manifest_or_config)
+    except Exception:
+        pass
     raise ValueError(
-        f"unknown processor type {kind!r}; expected one of {PROCESSOR_TYPES}")
+        f"unknown processor type {kind!r}; expected one of {PROCESSOR_TYPES} "
+        f"or an installed whispy.models plugin")
 
 
 __all__ = [

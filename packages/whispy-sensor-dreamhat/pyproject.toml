@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-sensor-dreamhat"
+version = "0.1.0"
+description = "DreamHAT BGT60TR13C mmWave radar adapter for Whispy (wraps the existing radar stack)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "whispy>=0.1.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+hardware = ["ifxradarsdk>=3.5", "scipy>=1.10"]
+
+[project.entry-points."whispy.sensors"]
+dreamhat-radar = "whispy_sensor_dreamhat:DreamHatRadarAdapter"
+
+[tool.setuptools.packages.find]
+include = ["whispy_sensor_dreamhat*"]

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-sensor-microphone"
+version = "0.1.0"
+description = "Microphone sensor adapter for Whispy (sounddevice/PortAudio: ALSA, USB, I2S, WASAPI)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "whispy>=0.1.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+]
+
+[project.entry-points."whispy.sensors"]
+microphone = "whispy_sensor_microphone:SoundDeviceMicrophoneAdapter"
+
+[tool.setuptools.packages.find]
+include = ["whispy_sensor_microphone*"]

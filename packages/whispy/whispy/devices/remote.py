@@ -20,7 +20,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional
 
-from ..contracts import Device, Sensor, SensorSample
+from ..contracts import (
+    ActionResult, ActuatorCommand, ActuatorDescriptor, Device, Sensor,
+    SensorSample,
+)
 from ..errors import APIError, AuthError, EntitlementError, NotFoundError
 from .base import DeviceHandle, SensorHandle
 
@@ -104,6 +107,39 @@ class _RemoteSensorHandle(SensorHandle):
                 time.sleep(poll_s)
 
 
+class _RemoteActuatorHandle:
+    """Executes commands on an actuator through Brain's device channel."""
+
+    def __init__(self, http: _Http, device_id: str,
+                 descriptor: ActuatorDescriptor):
+        self._http = http
+        self._device_id = device_id
+        self._info = descriptor
+
+    @property
+    def info(self) -> ActuatorDescriptor:
+        return self._info
+
+    @property
+    def descriptor(self) -> ActuatorDescriptor:
+        return self._info
+
+    def execute(self, command) -> ActionResult:
+        cmd = command if isinstance(command, ActuatorCommand) \
+            else ActuatorCommand.from_dict(command)
+        body = self._http.request(
+            "POST",
+            f"/v1/devices/{self._device_id}/actuators/{self._info.id}/actions",
+            body=cmd.to_dict())
+        return ActionResult.from_dict(body)
+
+    def supports(self, operation: str) -> bool:
+        return operation in (self._info.operations or [])
+
+    def close(self) -> None:
+        pass
+
+
 class RemoteDevice(DeviceHandle):
     """A Thoth node accessed through the Brain v1 API."""
 
@@ -127,11 +163,43 @@ class RemoteDevice(DeviceHandle):
         return [Sensor.from_dict(s) for s in (items or [])]
 
     def sensor(self, sensor_id_or_type: str) -> SensorHandle:
-        for s in self.sensors():
-            if s.id == sensor_id_or_type or s.type == sensor_id_or_type:
-                return _RemoteSensorHandle(self._http, self._info.id, s)
+        matches = [s for s in self.sensors()
+                   if s.id == sensor_id_or_type
+                   or s.metadata.get("name") == sensor_id_or_type]
+        if not matches:
+            matches = [s for s in self.sensors()
+                       if s.type == sensor_id_or_type]
+        if len(matches) == 1:
+            return _RemoteSensorHandle(self._http, self._info.id, matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous sensor {sensor_id_or_type!r} on device "
+                f"{self._info.name}: {[s.id for s in matches]}")
         raise KeyError(
             f"no sensor {sensor_id_or_type!r} on device {self._info.name}")
+
+    def actuators(self) -> List[ActuatorDescriptor]:
+        payload = self._http.request(
+            "GET", f"/v1/devices/{self._info.id}/actuators")
+        items = payload.get("actuators") if isinstance(payload, dict) else payload
+        return [ActuatorDescriptor.from_dict(a) for a in (items or [])]
+
+    def actuator(self, actuator_id_or_kind: str) -> _RemoteActuatorHandle:
+        descriptors = self.actuators()
+        for desc in descriptors:
+            if actuator_id_or_kind in (desc.id, desc.name) \
+                    and (desc.id or desc.name):
+                return _RemoteActuatorHandle(self._http, self._info.id, desc)
+        matches = [d for d in descriptors if d.kind == actuator_id_or_kind]
+        if len(matches) == 1:
+            return _RemoteActuatorHandle(self._http, self._info.id, matches[0])
+        if len(matches) > 1:
+            raise KeyError(
+                f"ambiguous actuator {actuator_id_or_kind!r} on device "
+                f"{self._info.name}: {[d.id for d in matches]}")
+        raise KeyError(
+            f"no actuator {actuator_id_or_kind!r} on device "
+            f"{self._info.name}")
 
     def captures(self) -> List[Dict[str, Any]]:
         payload = self._http.request(

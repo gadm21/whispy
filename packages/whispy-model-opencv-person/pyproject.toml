@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-model-opencv-person"
+version = "0.1.0"
+description = "OpenCV Haar person-presence model plugin for Whispy"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "whispy>=0.1.0",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+]
+
+[project.entry-points."whispy.models"]
+opencv-haar-person = "whispy_model_opencv_person:HaarPersonModel"
+
+[tool.setuptools.packages.find]
+include = ["whispy_model_opencv_person*"]
