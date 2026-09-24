@@ -1,7 +1,7 @@
 """Client helper tests — ContextCache TTL, DeviceRegistry, IntegrationRegistry."""
 import pytest
 
-from whispy.cloud import ContextCache, DeviceRegistry
+from whispy.cloud import ContextCache, DeviceRegistry, FaceGallery
 from whispy.integrations import IntegrationRegistry
 
 
@@ -55,3 +55,25 @@ def test_integration_registry():
     assert reg.disable("home-assistant")["enabled"] is False
     with pytest.raises(KeyError):
         reg.enable("nope", {})
+
+
+def test_face_gallery_pulls_projections():
+    payload = {"basis_id": "1", "image_size": 64, "max_distance": 3.5,
+               "persons": [{"name": "gad", "projection": [1.0, 2.0]},
+                           {"name": "gad", "projection": [1.1, 2.1]},
+                           {"name": "sara", "projection": [9.0, 9.0]}]}
+    calls = []
+    g = FaceGallery(lambda: (calls.append(1), payload)[1],
+                    basis_fetcher=lambda: b"npz-bytes", ttl_s=60)
+    assert g.projections() == {"gad": [[1.0, 2.0], [1.1, 2.1]],
+                               "sara": [[9.0, 9.0]]}
+    assert g.max_distance() == 3.5
+    assert g.basis_bytes() == b"npz-bytes"
+    g.gallery()                       # cached — no second fetch
+    assert len(calls) == 1
+
+    def boom():
+        raise RuntimeError("brain unreachable")
+    g2 = FaceGallery(boom)
+    assert g2.persons() == []
+    assert g2.last_error == "brain unreachable"

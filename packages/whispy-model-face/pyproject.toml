@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-model-face"
+version = "0.1.0"
+description = "Face detection + eigenface (PCA) recognition model plugins for Whispy"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "whispy>=0.1.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+detect = ["opencv-python>=4.8,<5"]
+
+[project.entry-points."whispy.models"]
+opencv-haar-face = "whispy_model_face:HaarFaceModel"
+pca-face-recognizer = "whispy_model_face:EigenfaceRecognizer"
+
+[tool.setuptools.packages.find]
+include = ["whispy_model_face*"]
