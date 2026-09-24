@@ -100,6 +100,7 @@ from .sensors import (
     SensorMeta,
 )
 from .models import ModelHandle, ModelRunner, model, models
+from .compute import model_fits, probe_compute
 from .capture import CaptureSession, capture_window
 from .plugins import PluginInfo, PluginRegistry
 from .streams import SampleStream
@@ -138,8 +139,9 @@ __all__ = [
     "Actuator", "ActuatorAdapter", "ActuatorHandle", "ActuatorMeta",
     "DeviceActuator", "HomeAssistantActuator", "WebhookActuator",
     "create_actuator", "Speak",
-    # plugins
+    # plugins / compute
     "PluginInfo", "PluginRegistry", "CaptureSession",
+    "probe_compute", "model_fits",
     # errors
     "WhispyError", "AuthError", "EntitlementError", "NotFoundError",
     "APIError", "SourceError", "SourceNotFoundError",

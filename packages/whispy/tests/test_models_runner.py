@@ -121,8 +121,13 @@ def test_runner_window_has_binding_map():
         proc = _EchoProcessor()
         runner = ModelRunner(proc, {"audio": mic}, window_seconds=0.2)
         runner.start()
-        time.sleep(0.3)
+        # Poll until the stream ingests at least one sample (fixed sleeps
+        # are flaky on loaded machines).
+        deadline = time.monotonic() + 5.0
         window = runner._window()
+        while not bound_samples(window, "audio") and time.monotonic() < deadline:
+            time.sleep(0.02)
+            window = runner._window()
         assert bound_sensor_id(window, "audio") == mic.info.id
         assert bound_samples(window, "audio")
         runner.stop()

@@ -22,7 +22,8 @@ import time
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from ..contracts import (
-    ModelBinding, ModelInput, Prediction, SensorWindow,
+    InferenceRequest, InferenceResult, InferenceTrace, ModelBinding,
+    ModelInput, ModelManifest, Prediction, SensorWindow,
 )
 from ..devices.base import SensorHandle
 from ..processors.base import Processor
@@ -71,12 +72,18 @@ class ModelRunner:
                  inputs: Optional[List[ModelInput]] = None,
                  window_seconds: float = 2.0,
                  device_id: str = "",
-                 stale_after_s: float = 5.0):
+                 stale_after_s: float = 5.0,
+                 manifest: Optional[ModelManifest] = None,
+                 runtime_id: str = "",
+                 execution_class: str = "local"):
         self.processor = processor
         self.bindings: Dict[str, SensorHandle] = dict(bindings)
         self.inputs = list(inputs or [])
         self.window_seconds = window_seconds
         self.device_id = device_id
+        self.manifest = manifest
+        self.runtime_id = runtime_id
+        self.execution_class = execution_class
         self._stale_after = stale_after_s
         self._streams: Dict[str, SampleStream] = {}
         self._sync: Optional[WindowSynchronizer] = None
@@ -166,6 +173,61 @@ class ModelRunner:
         while True:
             yield self.predict(warmup_s=0.0)
             time.sleep(interval)
+
+    # -- canonical inference (§15) -------------------------------------------
+    def infer(self, request: Optional[InferenceRequest] = None,
+              window_seconds: Optional[float] = None,
+              warmup_s: Optional[float] = None) -> InferenceResult:
+        """Run one inference and return a canonical InferenceResult.
+
+        Wraps :meth:`predict` with a complete :class:`InferenceTrace`:
+        model identity, artifact hash, runtime id, execution device/class,
+        input bindings, input interval, latency and confidence.
+        """
+        request = request or InferenceRequest(
+            model_id=self.manifest.model_id if self.manifest else "")
+        started = time.time()
+        try:
+            pred = self.predict(window_seconds=window_seconds,
+                                warmup_s=warmup_s)
+        except Exception as exc:
+            return InferenceResult(
+                request_id=request.request_id, status="failed",
+                error=str(exc),
+                trace=self._trace(request, started, None, None))
+        latency_ms = (time.time() - started) * 1000.0
+        interval = None
+        if pred.source_window:
+            interval = {
+                "start": float(pred.source_window.get("start") or 0.0),
+                "end": float(pred.source_window.get("end") or 0.0),
+            }
+        return InferenceResult(
+            request_id=request.request_id, status="succeeded",
+            prediction=pred,
+            trace=self._trace(request, started, latency_ms, pred.confidence,
+                              interval=interval),
+        )
+
+    def _trace(self, request: InferenceRequest, started: float,
+               latency_ms: Optional[float], confidence: Optional[float],
+               interval: Optional[Dict[str, float]] = None
+               ) -> InferenceTrace:
+        manifest = self.manifest
+        return InferenceTrace(
+            model_id=request.model_id or (manifest.model_id if manifest else ""),
+            model_version=manifest.version if manifest else "",
+            artifact_hash=manifest.artifact_sha256 if manifest else "",
+            runtime_id=self.runtime_id,
+            execution_device=self.device_id,
+            execution_class=self.execution_class,
+            input_bindings={name: h.info.id
+                            for name, h in self.bindings.items()},
+            input_interval=interval,
+            inference_timestamp=started,
+            latency_ms=latency_ms,
+            confidence=confidence,
+        )
 
 
 def bindings_from_config(
