@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e packages/whispy pytest
+      - run: python -m pip install -e packages/whispy pytest numpy opencv-python-headless
       - run: python -m pytest packages/whispy/tests
   publish-stub:
     if: startsWith(github.ref, 'refs/tags/v')
