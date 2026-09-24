@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/minute-manifest.schema.json",
+  "title": "MinuteManifest",
+  "description": "thoth-minute/v1 canonical minute container. Timestamp is authoritative; never assume 60 samples; one minute may hold heterogeneous sources.",
+  "type": "object",
+  "required": ["format", "minute_id", "device_id", "start_timestamp"],
+  "properties": {
+    "format": {"type": "string", "const": "thoth-minute/v1"},
+    "minute_id": {"type": "string"},
+    "device_id": {"type": "string"},
+    "start_timestamp": {"type": "number"},
+    "end_timestamp": {"type": ["number", "null"]},
+    "duration_seconds": {"type": ["number", "null"]},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_id"],
+        "properties": {
+          "source_id": {"type": "string"},
+          "modality": {"type": "string"},
+          "timestamps": {"type": "array", "items": {"type": "number"}},
+          "values": {"type": "array"},
+          "second_offsets": {"type": "array", "items": {"type": "number"}},
+          "units": {"type": "object"},
+          "quality": {"type": "object"},
+          "metadata": {"type": "object"}
+        }
+      }
+    },
+    "predictions": {"type": "array", "items": {"type": "object"}},
+    "events": {"type": "array", "items": {"type": "object"}},
+    "annotations": {"type": "array", "items": {"type": "object"}},
+    "labels": {"type": "object"},
+    "quality": {"type": "object"},
+    "source_metadata": {"type": "object"},
+    "files": {"type": "object", "additionalProperties": {"type": "string"}},
+    "checksums": {"type": "object", "additionalProperties": {"type": "string"}},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": true
+}

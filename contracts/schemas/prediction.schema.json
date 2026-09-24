@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/prediction.schema.json",
+  "title": "Prediction",
+  "type": "object",
+  "required": ["label"],
+  "properties": {
+    "id": {"type": "string"},
+    "device_id": {"type": "string"},
+    "runtime_model_id": {"type": "string"},
+    "task": {"type": "string"},
+    "timestamp": {"type": "number"},
+    "label": {"type": "string"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "scores": {"type": "object", "additionalProperties": {"type": "number"}},
+    "source_window": {"type": ["object", "null"]},
+    "people_count": {"type": ["integer", "null"]},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": true
+}

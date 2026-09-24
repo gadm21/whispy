@@ -72,14 +72,33 @@ DEPLOYMENT_TRANSITIONS: Dict[DeploymentState, frozenset] = {
 
 PROCESSOR_TYPES = ("rule", "torchscript", "fusion")
 MODEL_MANIFEST_FORMAT = "whispy-model/v1"
+MODEL_MANIFEST_FORMAT_V2 = "whispy-model/v2"
 # ``thoth-model/v1`` is the pre-rename name for the same manifest schema.
 # It is accepted on ingest and normalized to ``MODEL_MANIFEST_FORMAT`` so
 # packages produced before the rename keep working; new packages should
-# always emit ``whispy-model/v1``.
+# always emit ``whispy-model/v2`` (or ``whispy-model/v1``).
 LEGACY_MODEL_MANIFEST_FORMAT = "thoth-model/v1"
 SUPPORTED_MANIFEST_FORMATS = frozenset({
     MODEL_MANIFEST_FORMAT,
+    MODEL_MANIFEST_FORMAT_V2,
     LEGACY_MODEL_MANIFEST_FORMAT,
+})
+
+# Canonical minute container schema (§9). ``thoth-minute/v1`` replaces the
+# legacy chunk-oriented capture manifest as the domain temporal/storage
+# abstraction. Timestamp is authoritative; a minute may hold heterogeneous
+# sources and is never assumed to contain 60 samples.
+MINUTE_MANIFEST_FORMAT = "thoth-minute/v1"
+
+# Source classes (§4): physical sensors vs. logical/context sources.
+SOURCE_CLASSES = frozenset({"sensor", "context"})
+
+# Model lifecycle types (§7).
+MODEL_LIFECYCLES = frozenset({"streaming", "windowed", "batch"})
+
+# Execution classes (§7/§14). Vendor-neutral by design.
+EXECUTION_CLASSES = frozenset({
+    "local", "trusted_edge", "managed_cloud", "external_provider",
 })
 
 
@@ -145,7 +164,14 @@ class SensorDescriptor:
     capabilities: List[str] = field(default_factory=list)
     config_schema: Dict[str, Any] = field(default_factory=dict)
     stable: bool = False
+    source_class: str = "sensor"               # sensor | context (§4)
+    health: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def type(self) -> str:
+        """Canonical ``type`` view of ``modality`` (schema field name)."""
+        return self.modality
 
     @staticmethod
     def make_id(modality: str, hardware_id: str = "",
@@ -176,8 +202,15 @@ class SensorDescriptor:
             capabilities=list(data.get("capabilities") or []),
             config_schema=dict(data.get("config_schema") or {}),
             stable=bool(data.get("stable", False)),
+            source_class=str(data.get("source_class") or "sensor"),
+            health=dict(data.get("health") or {}),
             metadata=dict(data.get("metadata") or {}),
         )
+
+
+# ``SourceDescriptor`` is the canonical name (§4); ``SensorDescriptor`` is
+# retained as the backward-compatible alias — same class, same wire shape.
+SourceDescriptor = SensorDescriptor
 
 
 @dataclass
@@ -701,20 +734,36 @@ class ModelInput:
 
 @dataclass
 class ModelManifest:
-    """``whispy-model/v1`` artifact manifest (§18).
+    """``whispy-model/v1`` + ``whispy-model/v2`` artifact manifest (§7/§18).
 
-    Legacy ``thoth-model/v1`` manifests are accepted and normalized to the
-    canonical format name on ``from_dict``.
+    v2 adds a stable ``id``/``version``/``task`` identity, a declared
+    ``lifecycle`` (streaming|windowed|batch), vendor-neutral ``execution``
+    classes, ``resources`` hints, ``privacy`` classification, and a
+    ``config_schema``. Legacy ``thoth-model/v1`` and ``whispy-model/v1``
+    manifests are accepted and normalized on ``from_dict``.
     """
 
     name: str
-    processor: str                             # one of PROCESSOR_TYPES
+    processor: str                             # one of PROCESSOR_TYPES or plugin id
     inputs: List[ModelInput] = field(default_factory=list)
     outputs: List[str] = field(default_factory=list)
     format: str = MODEL_MANIFEST_FORMAT
     whispy_version: str = ""
     artifact_sha256: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # -- v2 fields (optional; defaults keep v1 semantics) ---------------------
+    id: str = ""                               # stable model id (defaults to name)
+    version: str = ""                          # model/package version
+    task: str = ""                             # e.g. person_presence, stt
+    lifecycle: str = "windowed"                # streaming | windowed | batch
+    execution: List[str] = field(default_factory=lambda: ["local"])
+    resources: Dict[str, Any] = field(default_factory=dict)
+    privacy: Dict[str, Any] = field(default_factory=dict)
+    config_schema: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def model_id(self) -> str:
+        return self.id or self.name
 
     def __post_init__(self) -> None:
         self.inputs = [
@@ -729,6 +778,15 @@ class ModelManifest:
             errors.append(
                 f"format must be one of {sorted(SUPPORTED_MANIFEST_FORMATS)}, "
                 f"got {self.format!r}")
+        if self.lifecycle and self.lifecycle not in MODEL_LIFECYCLES:
+            errors.append(
+                f"lifecycle must be one of {sorted(MODEL_LIFECYCLES)}, "
+                f"got {self.lifecycle!r}")
+        bad_exec = [e for e in self.execution if e not in EXECUTION_CLASSES]
+        if bad_exec:
+            errors.append(
+                f"execution entries must be in {sorted(EXECUTION_CLASSES)}, "
+                f"got {bad_exec}")
         if not self.name:
             errors.append("name is required")
         known = set(PROCESSOR_TYPES)
@@ -760,7 +818,7 @@ class ModelManifest:
         return hashlib.sha256(blob).hexdigest() == self.artifact_sha256
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "format": self.format,
             "name": self.name,
             "processor": self.processor,
@@ -770,24 +828,47 @@ class ModelManifest:
             "artifact_sha256": self.artifact_sha256,
             "metadata": self.metadata,
         }
+        if self.format == MODEL_MANIFEST_FORMAT_V2:
+            out.update({
+                "id": self.model_id,
+                "version": self.version,
+                "task": self.task,
+                "lifecycle": self.lifecycle,
+                "execution": list(self.execution),
+                "resources": self.resources,
+                "privacy": self.privacy,
+                "config_schema": self.config_schema,
+            })
+        return out
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ModelManifest":
-        fmt = str(data.get("format") or MODEL_MANIFEST_FORMAT)
+        fmt = str(data.get("format") or data.get("schema")
+                  or MODEL_MANIFEST_FORMAT)
         if fmt == LEGACY_MODEL_MANIFEST_FORMAT:
             fmt = MODEL_MANIFEST_FORMAT
         return cls(
             format=fmt,
-            name=str(data.get("name") or ""),
+            name=str(data.get("name") or data.get("id") or ""),
             processor=str(data.get("processor") or ""),
             inputs=[ModelInput.from_dict(i) for i in (data.get("inputs") or [])],
             outputs=list(data.get("outputs") or []),
             whispy_version=str(data.get("whispy_version") or ""),
-            artifact_sha256=str(data.get("artifact_sha256") or ""),
+            artifact_sha256=str(data.get("artifact_sha256")
+                                or data.get("artifact_hash") or ""),
             metadata=dict(data.get("metadata") or {}),
+            id=str(data.get("id") or ""),
+            version=str(data.get("version") or ""),
+            task=str(data.get("task") or ""),
+            lifecycle=str(data.get("lifecycle") or "windowed"),
+            execution=list(data.get("execution")
+                           or data.get("execution_classes") or ["local"]),
+            resources=dict(data.get("resources") or {}),
+            privacy=dict(data.get("privacy") or {}),
+            config_schema=dict(data.get("config_schema") or {}),
         )
 
     @classmethod
@@ -901,3 +982,612 @@ class Capture:
             sample_counts=dict(data.get("sample_counts") or {}),
             metadata=dict(data.get("metadata") or {}),
         )
+
+
+# ---------------------------------------------------------------------------
+# Observations (§4) — generalization of SensorSample
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Observation:
+    """One timestamped observation from any source class.
+
+    Generalizes :class:`SensorSample`: a battery reading, calendar entry,
+    or foreground-application record is an Observation whose source has
+    ``source_class="context"`` — it never pretends to be a physical sensor.
+    Optional fields stay optional.
+    """
+
+    source_id: str
+    device_id: str
+    timestamp: float                           # epoch seconds (authoritative)
+    payload: Any
+    observation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    schema: str = ""                           # e.g. "digital.foreground_application/v1"
+    sequence: int = 0
+    payload_type: str = "auto"
+    sample_rate: Optional[float] = None
+    units: Dict[str, str] = field(default_factory=dict)
+    quality: Dict[str, Any] = field(default_factory=dict)
+    provenance: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Optional — remain None when not applicable.
+    confidence: Optional[float] = None
+    accuracy: Optional[float] = None
+    spatial_reference: Optional[Dict[str, Any]] = None
+    privacy_classification: Optional[str] = None
+
+    @classmethod
+    def from_sample(cls, sample: "SensorSample",
+                    schema: str = "") -> "Observation":
+        """Project a legacy SensorSample into an Observation."""
+        return cls(
+            source_id=sample.sensor_id,
+            device_id=sample.device_id,
+            timestamp=sample.timestamp,
+            payload=sample.payload,
+            schema=schema or sample.sensor_type,
+            sequence=sample.sequence,
+            payload_type=sample.payload_type,
+            sample_rate=sample.sample_rate,
+            units=dict(sample.units),
+            provenance={"adapter": "sensor", "sensor_type": sample.sensor_type},
+            metadata=dict(sample.metadata),
+        )
+
+    def to_sample(self, sensor_type: str = "") -> "SensorSample":
+        """Project to the legacy SensorSample contract."""
+        return SensorSample(
+            device_id=self.device_id, sensor_id=self.source_id,
+            sensor_type=sensor_type or self.schema,
+            timestamp=self.timestamp, sequence=self.sequence,
+            payload_type=self.payload_type, payload=self.payload,
+            sample_rate=self.sample_rate, units=dict(self.units),
+            metadata=dict(self.metadata),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = self.payload
+        if hasattr(payload, "tolist"):
+            payload = payload.tolist()
+        return {
+            "observation_id": self.observation_id,
+            "source_id": self.source_id,
+            "device_id": self.device_id,
+            "timestamp": self.timestamp,
+            "schema": self.schema,
+            "sequence": self.sequence,
+            "payload_type": self.payload_type,
+            "payload": payload,
+            "sample_rate": self.sample_rate,
+            "units": self.units,
+            "quality": self.quality,
+            "provenance": self.provenance,
+            "metadata": self.metadata,
+            "confidence": self.confidence,
+            "accuracy": self.accuracy,
+            "spatial_reference": self.spatial_reference,
+            "privacy_classification": self.privacy_classification,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Observation":
+        return cls(
+            observation_id=str(data.get("observation_id")
+                               or data.get("id") or uuid.uuid4().hex),
+            source_id=str(data.get("source_id") or data.get("sensor_id") or ""),
+            device_id=str(data.get("device_id") or ""),
+            timestamp=float(data.get("timestamp") or 0.0),
+            schema=str(data.get("schema") or data.get("sensor_type") or ""),
+            sequence=int(data.get("sequence") or 0),
+            payload_type=str(data.get("payload_type") or "auto"),
+            payload=data.get("payload"),
+            sample_rate=data.get("sample_rate"),
+            units=dict(data.get("units") or {}),
+            quality=dict(data.get("quality") or {}),
+            provenance=dict(data.get("provenance") or {}),
+            metadata=dict(data.get("metadata") or {}),
+            confidence=data.get("confidence"),
+            accuracy=data.get("accuracy"),
+            spatial_reference=data.get("spatial_reference"),
+            privacy_classification=data.get("privacy_classification"),
+        )
+
+
+class ObservationWindow(SensorWindow):
+    """Synchronized multi-source window (§4/§15).
+
+    Structurally identical to :class:`SensorWindow`; ``observations`` is a
+    semantic alias for ``samples`` (source_id → list[Observation]).
+    """
+
+    @property
+    def observations(self) -> Dict[str, List[Any]]:
+        return self.samples
+
+    @property
+    def sources(self) -> tuple:
+        return self.sensors
+
+
+# ---------------------------------------------------------------------------
+# Compute capabilities (§13)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ComputeCapability:
+    """Device compute advertisement (§13).
+
+    Unknown metrics stay ``None`` — never fabricate thermal/GPU data.
+    Model routing matches on these capabilities, never on device names.
+    """
+
+    architecture: str = ""
+    logical_cpu_count: Optional[int] = None
+    memory_total_mb: Optional[int] = None
+    memory_available_mb: Optional[int] = None
+    gpu: List[Dict[str, Any]] = field(default_factory=list)
+    accelerators: List[str] = field(default_factory=list)
+    vram_mb: Optional[int] = None
+    storage_available_mb: Optional[int] = None
+    battery: Optional[Dict[str, Any]] = None
+    charging: Optional[bool] = None
+    thermal: Optional[Dict[str, Any]] = None
+    network: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ComputeCapability":
+        return cls(
+            architecture=str(data.get("architecture") or ""),
+            logical_cpu_count=data.get("logical_cpu_count"),
+            memory_total_mb=data.get("memory_total_mb"),
+            memory_available_mb=data.get("memory_available_mb"),
+            gpu=list(data.get("gpu") or []),
+            accelerators=list(data.get("accelerators") or []),
+            vram_mb=data.get("vram_mb"),
+            storage_available_mb=data.get("storage_available_mb"),
+            battery=data.get("battery"),
+            charging=data.get("charging"),
+            thermal=data.get("thermal"),
+            network=dict(data.get("network") or {}),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Inference (§14/§15)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InferencePolicy:
+    """Normalized execution policy (§14).
+
+    One canonical representation: ``allowed``/``preferred`` subsets of
+    EXECUTION_CLASSES plus constraints. Convenience strings
+    (``local_only``, ``prefer_local``, ``prefer_edge``, ``cloud_only``,
+    ``automatic``) map into this via :meth:`from_string`.
+    """
+
+    allowed: List[str] = field(
+        default_factory=lambda: ["local", "trusted_edge"])
+    preferred: List[str] = field(default_factory=list)
+    max_latency_ms: Optional[float] = None
+    max_cost: Optional[float] = None
+    queue_if_unavailable: bool = False
+    privacy: Dict[str, Any] = field(default_factory=dict)
+
+    _PRESETS = {
+        "local_only": (["local"], ["local"]),
+        "prefer_local": (["local", "trusted_edge"], ["local", "trusted_edge"]),
+        "prefer_edge": (["local", "trusted_edge"], ["trusted_edge", "local"]),
+        "cloud_only": (["managed_cloud"], ["managed_cloud"]),
+        "automatic": (["local", "trusted_edge", "managed_cloud"],
+                      ["local", "trusted_edge", "managed_cloud"]),
+    }
+
+    @classmethod
+    def from_string(cls, preset: str) -> "InferencePolicy":
+        allowed, preferred = cls._PRESETS.get(
+            preset, cls._PRESETS["automatic"])
+        return cls(allowed=list(allowed), preferred=list(preferred))
+
+    def __post_init__(self) -> None:
+        bad = [e for e in self.allowed + self.preferred
+               if e not in EXECUTION_CLASSES]
+        if bad:
+            raise ValueError(
+                f"unknown execution classes {bad}; "
+                f"valid: {sorted(EXECUTION_CLASSES)}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "preferred": self.preferred,
+            "max_latency_ms": self.max_latency_ms,
+            "max_cost": self.max_cost,
+            "queue_if_unavailable": self.queue_if_unavailable,
+            "privacy": self.privacy,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "InferencePolicy":
+        if isinstance(data, str):
+            return cls.from_string(data)
+        data = data or {}
+        return cls(
+            allowed=list(data.get("allowed")
+                         or data.get("allowed_execution_classes")
+                         or ["local", "trusted_edge"]),
+            preferred=list(data.get("preferred")
+                           or data.get("preferred_execution_classes") or []),
+            max_latency_ms=data.get("max_latency_ms"),
+            max_cost=data.get("max_cost"),
+            queue_if_unavailable=bool(data.get("queue_if_unavailable", False)),
+            privacy=dict(data.get("privacy") or {}),
+        )
+
+
+@dataclass
+class InferenceTarget:
+    """A resolved execution destination (§14)."""
+
+    execution_class: str = "local"             # one of EXECUTION_CLASSES
+    device_id: str = ""                        # target node ("" = requester)
+    worker_id: str = ""
+    provider: str = ""                         # external provider name
+    endpoint: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InferenceTarget":
+        return cls(
+            execution_class=str(data.get("execution_class") or "local"),
+            device_id=str(data.get("device_id") or ""),
+            worker_id=str(data.get("worker_id") or ""),
+            provider=str(data.get("provider") or ""),
+            endpoint=str(data.get("endpoint") or ""),
+        )
+
+
+@dataclass
+class InferenceRequest:
+    """Source-bound inference request (§14/§16).
+
+    ``bindings`` maps model input names to source ids; ``source_device``
+    selects where each source lives. No provider-specific fields — those
+    belong to the provider implementation, never the request.
+    """
+
+    model_id: str
+    bindings: Dict[str, str] = field(default_factory=dict)   # input → source_id
+    policy: InferencePolicy = field(default_factory=InferencePolicy)
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    source_device: str = ""
+    target: Optional[InferenceTarget] = None
+    window_seconds: Optional[float] = None
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "model_id": self.model_id,
+            "bindings": self.bindings,
+            "policy": self.policy.to_dict(),
+            "source_device": self.source_device,
+            "target": self.target.to_dict() if self.target else None,
+            "window_seconds": self.window_seconds,
+            "config": self.config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InferenceRequest":
+        target = data.get("target")
+        return cls(
+            request_id=str(data.get("request_id") or uuid.uuid4().hex),
+            model_id=str(data.get("model_id") or ""),
+            bindings=dict(data.get("bindings") or {}),
+            policy=InferencePolicy.from_dict(data.get("policy")),
+            source_device=str(data.get("source_device") or ""),
+            target=InferenceTarget.from_dict(target)
+                if isinstance(target, Mapping) else None,
+            window_seconds=data.get("window_seconds"),
+            config=dict(data.get("config") or {}),
+        )
+
+
+@dataclass
+class InferenceTrace:
+    """Complete provenance for one inference run (§15)."""
+
+    model_id: str
+    model_version: str = ""
+    artifact_hash: str = ""
+    runtime_id: str = ""
+    execution_device: str = ""
+    execution_class: str = "local"
+    input_bindings: Dict[str, str] = field(default_factory=dict)
+    input_interval: Optional[Dict[str, float]] = None
+    inference_timestamp: float = field(default_factory=time.time)
+    latency_ms: Optional[float] = None
+    confidence: Optional[float] = None
+    cpu_percent: Optional[float] = None
+    gpu_percent: Optional[float] = None
+    estimated_cost: Optional[float] = None
+    actual_cost: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InferenceTrace":
+        return cls(**{k: v for k, v in data.items()
+                      if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class InferenceResult:
+    """Canonical inference output (§15)."""
+
+    request_id: str = ""
+    prediction: Optional[Prediction] = None
+    trace: Optional[InferenceTrace] = None
+    status: str = "succeeded"                  # succeeded | failed | queued
+    error: str = ""
+    outputs: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "succeeded"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "status": self.status,
+            "error": self.error,
+            "prediction": self.prediction.to_dict() if self.prediction else None,
+            "trace": self.trace.to_dict() if self.trace else None,
+            "outputs": self.outputs,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "InferenceResult":
+        pred = data.get("prediction")
+        trace = data.get("trace")
+        return cls(
+            request_id=str(data.get("request_id") or ""),
+            status=str(data.get("status") or "succeeded"),
+            error=str(data.get("error") or ""),
+            prediction=Prediction.from_dict(pred)
+                if isinstance(pred, Mapping) else None,
+            trace=InferenceTrace.from_dict(trace)
+                if isinstance(trace, Mapping) else None,
+            outputs=dict(data.get("outputs") or {}),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Context model (§30–§35)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Relationship:
+    """Subject–predicate–object edge in the context graph (§32)."""
+
+    subject: str                               # entity id
+    predicate: str                             # carries | near | located_in | …
+    object: str                                # entity id
+    valid_from: float = field(default_factory=time.time)
+    valid_until: Optional[float] = None        # None = still valid
+    confidence: float = 1.0
+    source: str = ""
+    provenance: Dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Relationship":
+        return cls(
+            subject=str(data.get("subject") or ""),
+            predicate=str(data.get("predicate") or ""),
+            object=str(data.get("object") or ""),
+            valid_from=float(data.get("valid_from") or time.time()),
+            valid_until=data.get("valid_until"),
+            confidence=float(data.get("confidence") or 1.0),
+            source=str(data.get("source") or ""),
+            provenance=dict(data.get("provenance") or {}),
+            id=str(data.get("id") or uuid.uuid4().hex),
+        )
+
+
+@dataclass
+class ContextEvidence:
+    """One piece of evidence feeding a ContextState (§34).
+
+    Wraps an observation or prediction with provenance. Predictions are
+    evidence — never truth.
+    """
+
+    key: str                                   # e.g. "spatial.presence/v1"
+    value: Any
+    timestamp: float = field(default_factory=time.time)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    source_id: str = ""
+    device_id: str = ""
+    prediction_id: str = ""
+    observation_id: str = ""
+    model_id: str = ""
+    model_version: str = ""
+    confidence: Optional[float] = None
+    execution_class: str = ""
+    provenance: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ContextEvidence":
+        return cls(**{k: v for k, v in data.items()
+                      if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class ContextState:
+    """A derived context statement with evidence links (§34)."""
+
+    key: str                                   # e.g. "semantic.working/v1"
+    value: Any
+    confidence: float = 1.0
+    since: float = field(default_factory=time.time)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    entity_id: str = ""
+    evidence_ids: List[str] = field(default_factory=list)
+    estimator: str = ""                        # estimator/rule that produced it
+    valid_until: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ContextState":
+        return cls(**{k: v for k, v in data.items()
+                      if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class ContextEvent:
+    """A discrete transition emitted when a ContextState changes (§34)."""
+
+    key: str
+    event_type: str                            # entered | exited | changed
+    timestamp: float = field(default_factory=time.time)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    entity_id: str = ""
+    state_id: str = ""
+    value: Any = None
+    previous_value: Any = None
+    confidence: Optional[float] = None
+    provenance: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ContextEvent":
+        return cls(**{k: v for k, v in data.items()
+                      if k in cls.__dataclass_fields__})
+
+
+# ---------------------------------------------------------------------------
+# Canonical minute (§9)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MinuteSourceData:
+    """Per-source series inside a minute — timestamps are authoritative."""
+
+    source_id: str
+    modality: str = ""
+    timestamps: List[float] = field(default_factory=list)
+    values: List[Any] = field(default_factory=list)
+    second_offsets: List[float] = field(default_factory=list)
+    units: Dict[str, str] = field(default_factory=dict)
+    quality: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "MinuteSourceData":
+        return cls(
+            source_id=str(data.get("source_id") or data.get("sensor_id") or ""),
+            modality=str(data.get("modality") or data.get("type") or ""),
+            timestamps=list(data.get("timestamps") or []),
+            values=list(data.get("values") or []),
+            second_offsets=list(data.get("second_offsets") or []),
+            units=dict(data.get("units") or {}),
+            quality=dict(data.get("quality") or {}),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class MinuteManifest:
+    """``thoth-minute/v1`` — canonical minute container manifest (§9).
+
+    Replaces the legacy chunk-oriented capture manifest as the domain
+    temporal abstraction. ``start_timestamp`` is authoritative; a minute
+    may contain multiple heterogeneous sources, predictions, events and
+    annotations. Never assume 60 samples.
+    """
+
+    minute_id: str                             # e.g. "20260924_1014"
+    device_id: str
+    start_timestamp: float
+    format: str = MINUTE_MANIFEST_FORMAT
+    end_timestamp: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    sources: List[MinuteSourceData] = field(default_factory=list)
+    predictions: List[Dict[str, Any]] = field(default_factory=list)
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    annotations: List[Dict[str, Any]] = field(default_factory=list)
+    labels: Dict[str, Any] = field(default_factory=dict)
+    quality: Dict[str, Any] = field(default_factory=dict)
+    source_metadata: Dict[str, Any] = field(default_factory=dict)
+    files: Dict[str, str] = field(default_factory=dict)   # e.g. {"npz": "capture.npz"}
+    checksums: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "format": self.format,
+            "minute_id": self.minute_id,
+            "device_id": self.device_id,
+            "start_timestamp": self.start_timestamp,
+            "end_timestamp": self.end_timestamp,
+            "duration_seconds": self.duration_seconds,
+            "sources": [s.to_dict() for s in self.sources],
+            "predictions": self.predictions,
+            "events": self.events,
+            "annotations": self.annotations,
+            "labels": self.labels,
+            "quality": self.quality,
+            "source_metadata": self.source_metadata,
+            "files": self.files,
+            "checksums": self.checksums,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "MinuteManifest":
+        return cls(
+            format=str(data.get("format") or MINUTE_MANIFEST_FORMAT),
+            minute_id=str(data.get("minute_id") or data.get("minute") or ""),
+            device_id=str(data.get("device_id") or ""),
+            start_timestamp=float(
+                data.get("start_timestamp") or data.get("timestamp") or 0.0),
+            end_timestamp=data.get("end_timestamp"),
+            duration_seconds=data.get("duration_seconds"),
+            sources=[MinuteSourceData.from_dict(s)
+                     for s in (data.get("sources") or [])],
+            predictions=list(data.get("predictions") or []),
+            events=list(data.get("events") or []),
+            annotations=list(data.get("annotations") or []),
+            labels=dict(data.get("labels") or {}),
+            quality=dict(data.get("quality") or {}),
+            source_metadata=dict(data.get("source_metadata") or {}),
+            files=dict(data.get("files") or {}),
+            checksums=dict(data.get("checksums") or {}),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+# ``ActionRequest`` is the schema-level name for an actuator invocation;
+# ActuatorCommand already carries operation/params/timeout on the wire.
+ActionRequest = ActuatorCommand

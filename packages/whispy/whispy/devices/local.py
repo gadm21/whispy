@@ -28,7 +28,9 @@ from ..contracts import (
     ActionResult, ActuatorCommand, ActuatorDescriptor, Device, Sensor,
     SensorDescriptor, SensorSample,
 )
-from ..errors import APIError
+from ..errors import (
+    APIError, AmbiguousSourceError, SourceNotFoundError,
+)
 from ..sensors.base import (
     SensorAdapter, SensorDriver, SensorDriverAdapter, all_adapters,
 )
@@ -240,9 +242,7 @@ class LocalDevice(DeviceHandle):
         if len(matches) == 1:
             return self._sensor_handle(matches[0])
         if len(matches) > 1:
-            raise KeyError(
-                f"ambiguous sensor {key!r}: {[d.id for d in matches]}; "
-                f"use a stable id")
+            raise AmbiguousSourceError(key, [d.id for d in matches])
 
         for name, adapter in self._adapters.items():
             if name == key:
@@ -252,8 +252,7 @@ class LocalDevice(DeviceHandle):
                     found = []
                 if found:
                     return self._sensor_handle(found[0])
-        raise KeyError(f"no local sensor {key!r}; "
-                       f"available: {[d.id for d in descriptors]}")
+        raise SourceNotFoundError(key, [d.id for d in descriptors])
 
     def _sensor_handle(self, desc: SensorDescriptor) -> _LocalSensorHandle:
         adapter = self._adapters.get(desc.adapter) or \
@@ -480,11 +479,9 @@ class LanDevice(DeviceHandle):
         if len(matches) == 1:
             return _LanSensorHandle(self._http, matches[0])
         if len(matches) > 1:
-            raise KeyError(
-                f"ambiguous sensor {sensor_id_or_type!r} on {self.host}: "
-                f"{[s.id for s in matches]}; use a stable id")
-        raise KeyError(
-            f"no sensor {sensor_id_or_type!r} on {self.host}")
+            raise AmbiguousSourceError(
+                sensor_id_or_type, [s.id for s in matches])
+        raise SourceNotFoundError(sensor_id_or_type)
 
     def actuators(self) -> List[ActuatorDescriptor]:
         payload = self._http.get_json("/api/actuators")

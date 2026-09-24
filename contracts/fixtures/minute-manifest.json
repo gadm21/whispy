@@ -1,0 +1,46 @@
+{
+  "format": "thoth-minute/v1",
+  "minute_id": "20260924_1014",
+  "device_id": "pi2",
+  "start_timestamp": 1790242440.0,
+  "end_timestamp": 1790242500.0,
+  "duration_seconds": 60.0,
+  "sources": [
+    {
+      "source_id": "radar-main",
+      "modality": "radar",
+      "timestamps": [
+        1790242440.1,
+        1790242441.1
+      ],
+      "values": [
+        [
+          1,
+          2
+        ],
+        [
+          3,
+          4
+        ]
+      ],
+      "second_offsets": [
+        0.1,
+        1.1
+      ],
+      "units": {},
+      "quality": {},
+      "metadata": {}
+    }
+  ],
+  "predictions": [],
+  "events": [],
+  "annotations": [],
+  "labels": {},
+  "quality": {},
+  "source_metadata": {},
+  "files": {
+    "npz": "capture.npz"
+  },
+  "checksums": {},
+  "metadata": {}
+}

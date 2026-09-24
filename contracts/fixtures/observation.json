@@ -1,0 +1,23 @@
+{
+  "observation_id": "obs-1",
+  "source_id": "camera-f91a",
+  "device_id": "local-1",
+  "timestamp": 1790242800.5,
+  "schema": "physical.frame/v1",
+  "sequence": 7,
+  "payload_type": "jpeg",
+  "payload": "<bytes>",
+  "sample_rate": 30.0,
+  "units": {},
+  "quality": {
+    "exposure": "ok"
+  },
+  "provenance": {
+    "adapter": "opencv-camera"
+  },
+  "metadata": {},
+  "confidence": null,
+  "accuracy": null,
+  "spatial_reference": null,
+  "privacy_classification": "sensitive_raw"
+}

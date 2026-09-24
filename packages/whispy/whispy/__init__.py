@@ -19,35 +19,55 @@ Remote sensing through Brain::
 
 from .contracts import (
     Action,
+    ActionRequest,
     ActionResult,
     ActionStatus,
     ActuatorCommand,
     ActuatorDescriptor,
     Capture,
+    ComputeCapability,
+    ContextEvent,
+    ContextEvidence,
+    ContextState,
     Deployment,
     DeploymentState,
     Device,
+    InferencePolicy,
+    InferenceRequest,
+    InferenceResult,
+    InferenceTarget,
+    InferenceTrace,
+    MinuteManifest,
+    MinuteSourceData,
     ModalityState,
     ModelBinding,
     ModelInput,
     ModelManifest,
+    Observation,
+    ObservationWindow,
     Prediction,
+    Relationship,
     RetryPolicy,
     Sensor,
     SensorDescriptor,
     SensorSample,
     SensorWindow,
+    SourceDescriptor,
 )
 from .devices import (
     DeviceHandle, LanDevice, LocalDevice, RemoteDevice, SensorHandle,
-    lan, local,
+    SourceHandle, lan, local,
 )
 from .cloud.client import Client
 from .errors import (
     APIError,
+    AmbiguousSourceError,
     AuthError,
     EntitlementError,
     NotFoundError,
+    SourceError,
+    SourceNotFoundError,
+    SourceUnavailableError,
     WhispyError,
 )
 from .processors import (
@@ -70,8 +90,10 @@ from .actuators import (
     create_actuator,
 )
 from .sensors import (
+    ContextAdapter,
     FixtureDriver,
     HealthReport,
+    ObservationAdapter,
     SensorAdapter,
     SensorDriver,
     SensorDriverAdapter,
@@ -90,15 +112,22 @@ __all__ = [
     # entry points
     "local", "lan", "Client", "model", "models", "capture_window",
     # contracts
-    "Action", "ActionResult", "ActionStatus", "ActuatorCommand",
-    "ActuatorDescriptor", "Capture", "Deployment", "DeploymentState",
-    "Device", "ModalityState", "ModelBinding", "ModelInput",
-    "ModelManifest", "Prediction", "RetryPolicy", "Sensor",
-    "SensorDescriptor", "SensorSample", "SensorWindow",
+    "Action", "ActionRequest", "ActionResult", "ActionStatus",
+    "ActuatorCommand", "ActuatorDescriptor", "Capture",
+    "ComputeCapability", "ContextEvent", "ContextEvidence",
+    "ContextState", "Deployment", "DeploymentState", "Device",
+    "InferencePolicy", "InferenceRequest", "InferenceResult",
+    "InferenceTarget", "InferenceTrace", "MinuteManifest",
+    "MinuteSourceData", "ModalityState", "ModelBinding", "ModelInput",
+    "ModelManifest", "Observation", "ObservationWindow", "Prediction",
+    "Relationship", "RetryPolicy", "Sensor", "SensorDescriptor",
+    "SensorSample", "SensorWindow", "SourceDescriptor",
     # devices
-    "DeviceHandle", "SensorHandle", "LocalDevice", "LanDevice", "RemoteDevice",
+    "DeviceHandle", "SensorHandle", "SourceHandle", "LocalDevice",
+    "LanDevice", "RemoteDevice",
     # sensors
-    "SensorAdapter", "SensorDriver", "SensorDriverAdapter", "SensorMeta",
+    "SensorAdapter", "ObservationAdapter", "ContextAdapter",
+    "SensorDriver", "SensorDriverAdapter", "SensorMeta",
     "HealthReport", "FixtureDriver",
     # streams/windows
     "SampleStream", "WindowSynchronizer", "WindowFeatures",
@@ -112,6 +141,8 @@ __all__ = [
     # plugins
     "PluginInfo", "PluginRegistry", "CaptureSession",
     # errors
-    "WhispyError", "AuthError", "EntitlementError", "NotFoundError", "APIError",
+    "WhispyError", "AuthError", "EntitlementError", "NotFoundError",
+    "APIError", "SourceError", "SourceNotFoundError",
+    "AmbiguousSourceError", "SourceUnavailableError",
     "__version__",
 ]

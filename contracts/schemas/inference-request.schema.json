@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/inference-request.schema.json",
+  "title": "InferenceRequest",
+  "description": "Source-bound inference request. No provider-specific fields — those belong to the provider implementation.",
+  "type": "object",
+  "required": ["model_id"],
+  "properties": {
+    "request_id": {"type": "string"},
+    "model_id": {"type": "string"},
+    "bindings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "input name -> source_id"},
+    "policy": {
+      "type": "object",
+      "properties": {
+        "allowed": {"type": "array", "items": {"type": "string", "enum": ["local", "trusted_edge", "managed_cloud", "external_provider"]}},
+        "preferred": {"type": "array", "items": {"type": "string", "enum": ["local", "trusted_edge", "managed_cloud", "external_provider"]}},
+        "max_latency_ms": {"type": ["number", "null"]},
+        "max_cost": {"type": ["number", "null"]},
+        "queue_if_unavailable": {"type": "boolean", "default": false},
+        "privacy": {"type": "object"}
+      }
+    },
+    "source_device": {"type": "string"},
+    "target": {
+      "type": ["object", "null"],
+      "properties": {
+        "execution_class": {"type": "string", "enum": ["local", "trusted_edge", "managed_cloud", "external_provider"]},
+        "device_id": {"type": "string"},
+        "worker_id": {"type": "string"},
+        "provider": {"type": "string"},
+        "endpoint": {"type": "string"}
+      }
+    },
+    "window_seconds": {"type": ["number", "null"]},
+    "config": {"type": "object"}
+  },
+  "additionalProperties": true
+}

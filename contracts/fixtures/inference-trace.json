@@ -1,0 +1,22 @@
+{
+  "model_id": "whisper-stt",
+  "model_version": "1.0.0",
+  "artifact_hash": "abc123",
+  "runtime_id": "rt-1",
+  "execution_device": "laptop",
+  "execution_class": "trusted_edge",
+  "input_bindings": {
+    "audio": "microphone-ab12"
+  },
+  "input_interval": {
+    "start": 1790242800.0,
+    "end": 1790242804.0
+  },
+  "inference_timestamp": 1790242805.0,
+  "latency_ms": 800.0,
+  "confidence": 0.95,
+  "cpu_percent": null,
+  "gpu_percent": null,
+  "estimated_cost": null,
+  "actual_cost": null
+}

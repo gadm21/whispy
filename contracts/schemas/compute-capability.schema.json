@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/compute-capability.schema.json",
+  "title": "ComputeCapability",
+  "description": "Device compute advertisement. Unknown metrics are null — never fabricated.",
+  "type": "object",
+  "properties": {
+    "architecture": {"type": "string"},
+    "logical_cpu_count": {"type": ["integer", "null"]},
+    "memory_total_mb": {"type": ["integer", "null"]},
+    "memory_available_mb": {"type": ["integer", "null"]},
+    "gpu": {"type": "array", "items": {"type": "object"}},
+    "accelerators": {"type": "array", "items": {"type": "string"}},
+    "vram_mb": {"type": ["integer", "null"]},
+    "storage_available_mb": {"type": ["integer", "null"]},
+    "battery": {"type": ["object", "null"]},
+    "charging": {"type": ["boolean", "null"]},
+    "thermal": {"type": ["object", "null"]},
+    "network": {"type": "object"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,9 @@
+{
+  "status": "succeeded",
+  "action_type": "speaker",
+  "detail": "played",
+  "attempts": 1,
+  "started_at": 1790242800.0,
+  "finished_at": 1790242801.0,
+  "response": {}
+}

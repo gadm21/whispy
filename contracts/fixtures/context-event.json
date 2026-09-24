@@ -1,0 +1,12 @@
+{
+  "id": "cev-1",
+  "key": "spatial.occupancy/v1",
+  "event_type": "entered",
+  "timestamp": 1790242800.0,
+  "entity_id": "space:lab",
+  "state_id": "st-9",
+  "value": "occupied",
+  "previous_value": "vacant",
+  "confidence": 0.93,
+  "provenance": {}
+}

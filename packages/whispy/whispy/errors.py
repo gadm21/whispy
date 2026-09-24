@@ -26,6 +26,36 @@ class APIError(WhispyError):
         self.detail = detail
 
 
+class SourceError(WhispyError):
+    """Base class for observation-source resolution failures."""
+
+
+class SourceNotFoundError(SourceError, KeyError):
+    """No source matches the requested id/name/modality (404-ish)."""
+
+    def __init__(self, key: str, available=None):
+        self.key = key
+        self.available = list(available or [])
+        super().__init__(
+            f"no source {key!r}; available: {self.available}")
+
+
+class AmbiguousSourceError(SourceError, KeyError):
+    """A modality/name matched more than one source; a stable id is required."""
+
+    def __init__(self, key: str, candidates=None):
+        self.key = key
+        self.candidates = list(candidates or [])
+        super().__init__(
+            f"ambiguous source {key!r}: {self.candidates}; use a stable id")
+
+
+class SourceUnavailableError(SourceError):
+    """The source exists but cannot be opened right now (offline, busy)."""
+
+
 __all__ = [
     "WhispyError", "AuthError", "EntitlementError", "NotFoundError", "APIError",
+    "SourceError", "SourceNotFoundError", "AmbiguousSourceError",
+    "SourceUnavailableError",
 ]

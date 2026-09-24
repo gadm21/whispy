@@ -1,0 +1,7 @@
+{
+  "operation": "speak",
+  "params": {
+    "text": "hello"
+  },
+  "timeout_seconds": 10.0
+}

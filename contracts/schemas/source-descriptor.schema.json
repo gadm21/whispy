@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/source-descriptor.schema.json",
+  "title": "SourceDescriptor",
+  "description": "A discovered observation-source instance. Canonical id prefers hardware serial/UUID, persistent OS interface id, bus/path identity, network UUID, then persisted local identity; enumeration index is an unstable fallback (stable=false).",
+  "type": "object",
+  "required": ["id", "modality"],
+  "properties": {
+    "id": {"type": "string"},
+    "modality": {"type": "string", "description": "camera | microphone | radar | battery | foreground_app | ..."},
+    "type": {"type": "string", "description": "alias of modality"},
+    "adapter": {"type": "string"},
+    "name": {"type": "string"},
+    "hardware_id": {"type": "string"},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "config_schema": {"type": "object"},
+    "stable": {"type": "boolean", "default": false},
+    "source_class": {"type": "string", "enum": ["sensor", "context"], "default": "sensor"},
+    "health": {"type": "object"},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": true
+}

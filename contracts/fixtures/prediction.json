@@ -1,0 +1,15 @@
+{
+  "id": "pred-1",
+  "device_id": "local-abc",
+  "runtime_model_id": "rm-1",
+  "task": "person_presence",
+  "timestamp": 1790242801.0,
+  "label": "person",
+  "confidence": 0.9,
+  "scores": {
+    "person": 0.9
+  },
+  "source_window": null,
+  "people_count": 1,
+  "metadata": {}
+}

@@ -1,0 +1,11 @@
+{
+  "id": "rel-1",
+  "subject": "person:gad",
+  "predicate": "carries",
+  "object": "device:phone",
+  "valid_from": 1790240000.0,
+  "valid_until": null,
+  "confidence": 0.91,
+  "source": "ble-proximity",
+  "provenance": {}
+}

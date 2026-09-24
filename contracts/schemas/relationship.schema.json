@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/relationship.schema.json",
+  "title": "Relationship",
+  "description": "Subject-predicate-object edge in the context graph. valid_until=null means still valid.",
+  "type": "object",
+  "required": ["subject", "predicate", "object"],
+  "properties": {
+    "id": {"type": "string"},
+    "subject": {"type": "string"},
+    "predicate": {"type": "string"},
+    "object": {"type": "string"},
+    "valid_from": {"type": "number"},
+    "valid_until": {"type": ["number", "null"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "source": {"type": "string"},
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": true
+}

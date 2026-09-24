@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/device-descriptor.schema.json",
+  "title": "DeviceDescriptor",
+  "description": "A Thoth node. LAN IPs are diagnostics, never identity.",
+  "type": "object",
+  "required": ["id", "stable_uuid", "name"],
+  "properties": {
+    "id": {"type": "string"},
+    "stable_uuid": {"type": "string"},
+    "name": {"type": "string"},
+    "owner": {"type": ["string", "null"]},
+    "platform": {"type": "string"},
+    "architecture": {"type": "string"},
+    "software_version": {"type": "string"},
+    "whispy_version": {"type": "string"},
+    "online": {"type": "boolean", "default": false},
+    "last_seen": {"type": ["number", "null"]},
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "sensors": {"type": "array", "items": {"type": "object"}},
+    "health": {"type": "object"},
+    "compute": {"$ref": "compute-capability.schema.json"}
+  },
+  "additionalProperties": true
+}

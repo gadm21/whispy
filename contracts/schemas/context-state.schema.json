@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/context-state.schema.json",
+  "title": "ContextState",
+  "description": "A derived context statement with evidence links. Always explainable via evidence_ids.",
+  "type": "object",
+  "required": ["key", "value"],
+  "properties": {
+    "id": {"type": "string"},
+    "key": {"type": "string", "description": "versioned context key e.g. semantic.working/v1"},
+    "value": {},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "since": {"type": "number"},
+    "entity_id": {"type": "string"},
+    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+    "estimator": {"type": "string"},
+    "valid_until": {"type": ["number", "null"]}
+  },
+  "additionalProperties": true
+}

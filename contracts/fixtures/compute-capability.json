@@ -1,0 +1,18 @@
+{
+  "architecture": "AMD64",
+  "logical_cpu_count": 16,
+  "memory_total_mb": 32768,
+  "memory_available_mb": 12000,
+  "gpu": [],
+  "accelerators": [],
+  "vram_mb": null,
+  "storage_available_mb": 200000,
+  "battery": {
+    "percent": 80
+  },
+  "charging": true,
+  "thermal": null,
+  "network": {
+    "lan": true
+  }
+}

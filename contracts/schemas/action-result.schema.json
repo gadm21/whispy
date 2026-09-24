@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/action-result.schema.json",
+  "title": "ActionResult",
+  "description": "Explicit actuator execution outcome. 'succeeded' only after hardware/provider confirmation.",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"type": "string", "enum": ["queued", "executing", "succeeded", "failed", "unsupported"]},
+    "action_type": {"type": "string"},
+    "detail": {"type": "string"},
+    "attempts": {"type": "integer"},
+    "started_at": {"type": ["number", "null"]},
+    "finished_at": {"type": ["number", "null"]},
+    "response": {"type": ["object", "null"]}
+  },
+  "additionalProperties": true
+}

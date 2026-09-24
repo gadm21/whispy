@@ -2,7 +2,9 @@
 
 from .base import (
     ENTRY_POINT_GROUP,
+    ContextAdapter,
     HealthReport,
+    ObservationAdapter,
     SensorAdapter,
     SensorDriver,
     SensorDriverAdapter,
@@ -18,7 +20,9 @@ from .fixture import FixtureDriver
 
 __all__ = [
     "ENTRY_POINT_GROUP",
+    "ContextAdapter",
     "HealthReport",
+    "ObservationAdapter",
     "SensorAdapter",
     "SensorDriver",
     "SensorDriverAdapter",

@@ -89,18 +89,24 @@ class SensorDriver(ABC):
 
 
 class SensorAdapter(ABC):
-    """New-style sensor adapter — discovers physical sensor instances.
+    """New-style source adapter — discovers observation-source instances.
 
     Lifecycle::
 
-        adapter.discover()          → list[SensorDescriptor] (0..n)
-        adapter.connect(desc, cfg)  → SensorHandle (opened lazily)
+        adapter.discover()          → list[SourceDescriptor] (0..n)
+        adapter.connect(desc, cfg)  → SourceHandle (opened lazily)
         adapter.close()             → release adapter-level resources
 
     Unlike :class:`SensorDriver`, an adapter is *not* bound to a single
-    sensor: a camera adapter discovers every attached camera, a Sense
+    source: a camera adapter discovers every attached camera, a Sense
     HAT adapter exposes imu/temperature/humidity/pressure descriptors.
+
+    ``source_class`` is ``"sensor"`` for physical hardware. Context
+    sources (battery, foreground app, calendar…) subclass
+    :class:`ContextAdapter` instead — they are never fake sensors.
     """
+
+    source_class: str = "sensor"
 
     @abstractmethod
     def metadata(self) -> SensorMeta:
@@ -120,6 +126,30 @@ class SensorAdapter(ABC):
 
     def close(self) -> None:
         """Release adapter-level resources; safe to call twice."""
+
+
+# Canonical names (§4): ``ObservationAdapter`` is the general contract;
+# ``SensorAdapter`` remains the physical-sensor specialization.
+ObservationAdapter = SensorAdapter
+
+
+class ContextAdapter(SensorAdapter):
+    """Adapter for non-physical observation sources (§4).
+
+    Context sources produce :class:`~whispy.contracts.Observation`-shaped
+    data (battery state, foreground application, location fixes, calendar
+    entries) whose descriptors carry ``source_class="context"``.
+    """
+
+    source_class: str = "context"
+
+    @staticmethod
+    def _mark_context(descriptors: List[SensorDescriptor]
+                      ) -> List[SensorDescriptor]:
+        """Tag discovered descriptors as context sources."""
+        for desc in descriptors:
+            desc.source_class = "context"
+        return descriptors
 
 
 class _DriverSensorHandle:
@@ -230,6 +260,7 @@ class SensorDriverAdapter(SensorAdapter):
                     capabilities=list(meta.modalities),
                     config_schema=dict(meta.config_schema),
                     stable=bool(hw),
+                    source_class=self.source_class,
                     metadata={"legacy_driver": True,
                               "discovered": dev},
                 ))

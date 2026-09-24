@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/context-event.schema.json",
+  "title": "ContextEvent",
+  "description": "Discrete transition emitted when a ContextState changes.",
+  "type": "object",
+  "required": ["key", "event_type"],
+  "properties": {
+    "id": {"type": "string"},
+    "key": {"type": "string"},
+    "event_type": {"type": "string", "enum": ["entered", "exited", "changed"]},
+    "timestamp": {"type": "number"},
+    "entity_id": {"type": "string"},
+    "state_id": {"type": "string"},
+    "value": {},
+    "previous_value": {},
+    "confidence": {"type": ["number", "null"]},
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": true
+}

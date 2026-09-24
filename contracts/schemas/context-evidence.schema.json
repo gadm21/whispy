@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/context-evidence.schema.json",
+  "title": "ContextEvidence",
+  "description": "One piece of evidence feeding a ContextState. Predictions are evidence, never truth.",
+  "type": "object",
+  "required": ["key", "value", "timestamp"],
+  "properties": {
+    "id": {"type": "string"},
+    "key": {"type": "string", "description": "versioned context key e.g. spatial.presence/v1"},
+    "value": {},
+    "timestamp": {"type": "number"},
+    "source_id": {"type": "string"},
+    "device_id": {"type": "string"},
+    "prediction_id": {"type": "string"},
+    "observation_id": {"type": "string"},
+    "model_id": {"type": "string"},
+    "model_version": {"type": "string"},
+    "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "execution_class": {"type": "string", "enum": ["", "local", "trusted_edge", "managed_cloud", "external_provider"]},
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": true
+}

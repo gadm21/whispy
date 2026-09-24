@@ -1,0 +1,17 @@
+{
+  "id": "camera-f91a",
+  "modality": "camera",
+  "adapter": "opencv-camera",
+  "name": "Integrated Camera",
+  "hardware_id": "USB\\VID_1234",
+  "capabilities": [
+    "frames"
+  ],
+  "config_schema": {},
+  "stable": true,
+  "source_class": "sensor",
+  "health": {
+    "status": "ok"
+  },
+  "metadata": {}
+}

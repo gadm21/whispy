@@ -1,0 +1,14 @@
+{
+  "id": "st-1",
+  "key": "semantic.working/v1",
+  "value": "working",
+  "confidence": 0.88,
+  "since": 1790242400.0,
+  "entity_id": "person:gad",
+  "evidence_ids": [
+    "ev-1",
+    "ev-2"
+  ],
+  "estimator": "weighted-v1",
+  "valid_until": null
+}

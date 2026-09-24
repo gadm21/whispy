@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/action-request.schema.json",
+  "title": "ActionRequest",
+  "description": "Actuator invocation (wire form of ActuatorCommand).",
+  "type": "object",
+  "required": ["operation"],
+  "properties": {
+    "operation": {"type": "string"},
+    "params": {"type": "object"},
+    "timeout_seconds": {"type": "number", "default": 30.0}
+  },
+  "additionalProperties": true
+}

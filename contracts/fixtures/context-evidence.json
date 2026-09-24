@@ -1,0 +1,15 @@
+{
+  "id": "ev-1",
+  "key": "spatial.presence/v1",
+  "value": "occupied",
+  "timestamp": 1790242800.0,
+  "source_id": "radar-main",
+  "device_id": "pi2",
+  "prediction_id": "pred-1",
+  "observation_id": "",
+  "model_id": "occupancy-v2",
+  "model_version": "2.1",
+  "confidence": 0.95,
+  "execution_class": "local",
+  "provenance": {}
+}

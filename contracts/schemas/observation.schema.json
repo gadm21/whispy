@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/observation.schema.json",
+  "title": "Observation",
+  "description": "One timestamped observation from any source class (sensor or context). Timestamp is authoritative; optional fields may be omitted/null.",
+  "type": "object",
+  "required": ["observation_id", "source_id", "device_id", "timestamp", "payload"],
+  "properties": {
+    "observation_id": {"type": "string"},
+    "source_id": {"type": "string"},
+    "device_id": {"type": "string"},
+    "timestamp": {"type": "number"},
+    "schema": {"type": "string", "description": "versioned context key e.g. digital.foreground_application/v1"},
+    "sequence": {"type": "integer", "default": 0},
+    "payload_type": {"type": "string", "default": "auto"},
+    "payload": {},
+    "sample_rate": {"type": ["number", "null"]},
+    "units": {"type": "object", "additionalProperties": {"type": "string"}},
+    "quality": {"type": "object"},
+    "provenance": {"type": "object"},
+    "metadata": {"type": "object"},
+    "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "accuracy": {"type": ["number", "null"]},
+    "spatial_reference": {"type": ["object", "null"]},
+    "privacy_classification": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

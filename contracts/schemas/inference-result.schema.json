@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/inference-result.schema.json",
+  "title": "InferenceResult",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "request_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["succeeded", "failed", "queued"]},
+    "error": {"type": "string"},
+    "prediction": {"$ref": "prediction.schema.json"},
+    "trace": {"$ref": "inference-trace.schema.json"},
+    "outputs": {"type": "object"}
+  },
+  "additionalProperties": true
+}

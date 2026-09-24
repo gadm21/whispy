@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thothcraft.dev/schemas/inference-trace.schema.json",
+  "title": "InferenceTrace",
+  "description": "Complete provenance for one inference run.",
+  "type": "object",
+  "required": ["model_id"],
+  "properties": {
+    "model_id": {"type": "string"},
+    "model_version": {"type": "string"},
+    "artifact_hash": {"type": "string"},
+    "runtime_id": {"type": "string"},
+    "execution_device": {"type": "string"},
+    "execution_class": {"type": "string", "enum": ["local", "trusted_edge", "managed_cloud", "external_provider"]},
+    "input_bindings": {"type": "object", "additionalProperties": {"type": "string"}},
+    "input_interval": {"type": ["object", "null"], "properties": {"start": {"type": "number"}, "end": {"type": "number"}}},
+    "inference_timestamp": {"type": "number"},
+    "latency_ms": {"type": ["number", "null"]},
+    "confidence": {"type": ["number", "null"]},
+    "cpu_percent": {"type": ["number", "null"]},
+    "gpu_percent": {"type": ["number", "null"]},
+    "estimated_cost": {"type": ["number", "null"]},
+    "actual_cost": {"type": ["number", "null"]}
+  },
+  "additionalProperties": true
+}

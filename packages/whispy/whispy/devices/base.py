@@ -11,7 +11,7 @@ from ..contracts import (
 
 
 class SensorHandle(ABC):
-    """A streamable sensor on a device."""
+    """A streamable observation source on a device (§4)."""
 
     @property
     @abstractmethod
@@ -44,6 +44,20 @@ class DeviceHandle(ABC):
     def sensor(self, sensor_id_or_type: str) -> SensorHandle:
         """Resolve a sensor by id, name, or unambiguous modality."""
 
+    def sources(self) -> List[Sensor]:
+        """All observation sources (physical sensors + context sources)."""
+        return self.sensors()
+
+    def source(self, source_id_or_type: str) -> SensorHandle:
+        """Resolve an observation source by id, name, or modality.
+
+        Convenience resolution: succeeds automatically only when exactly
+        one compatible source exists; raises
+        :class:`~whispy.errors.AmbiguousSourceError` when several match
+        and :class:`~whispy.errors.SourceNotFoundError` when none do.
+        """
+        return self.sensor(source_id_or_type)
+
     def sensor_descriptors(self) -> List[SensorDescriptor]:
         """Physical sensor descriptors when the device exposes them."""
         return []
@@ -62,4 +76,8 @@ class DeviceHandle(ABC):
         return self.info.to_dict()
 
 
-__all__ = ["DeviceHandle", "SensorHandle"]
+# ``SourceHandle`` is the canonical name (§4); ``SensorHandle`` remains
+# the backward-compatible alias — same interface.
+SourceHandle = SensorHandle
+
+__all__ = ["DeviceHandle", "SensorHandle", "SourceHandle"]
