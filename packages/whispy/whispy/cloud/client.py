@@ -169,5 +169,10 @@ class Client:
                                      params=params)
         return payload.get("persons") or []
 
+    def delete_face(self, asset_id: str) -> Dict[str, Any]:
+        """Delete one enrolled person asset by id."""
+        return self._http.request("DELETE",
+                                  f"/v1/faces/persons/{asset_id}")
+
 
 __all__ = ["Client", "DEFAULT_BASE_URL"]  # + face_* methods above
