@@ -66,6 +66,18 @@ def fit_basis(images: Sequence[np.ndarray],
     """
     rows = [normalize_image(im, image_size) for im in images]
     rows = [r for r in rows if r is not None]
+    return fit_basis_normalized(rows, image_size, n_components)
+
+
+def fit_basis_normalized(vectors: Sequence[np.ndarray],
+                         image_size: int = DEFAULT_IMAGE_SIZE,
+                         n_components: int = DEFAULT_COMPONENTS
+                         ) -> Dict[str, Any]:
+    """Fit a basis from already-normalized vectors (``normalize_image``
+    output). Shared by Brain's enrollment path so the SVD math lives in
+    exactly one place.
+    """
+    rows = [np.asarray(v, dtype=np.float32) for v in vectors if v is not None]
     if len(rows) < 2:
         raise ValueError("need at least 2 decodable images to fit a basis")
     A = np.stack(rows)

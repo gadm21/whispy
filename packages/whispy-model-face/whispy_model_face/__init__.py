@@ -225,9 +225,14 @@ class EigenfaceRecognizer(Processor):
         self._gallery: Dict[str, List[List[float]]] = {
             str(k): [list(p) for p in v]
             for k, v in dict(self._config.get("gallery") or {}).items()}
-        self._max_distance = float(self._config.get("max_distance") or 0.0)
-        if not self._max_distance and self._gallery:
-            self._max_distance = _basis.calibrate_threshold(self._gallery)
+        # Threshold state is explicit (§identity): ``None`` means "not
+        # configured — calibrate from the gallery"; a numeric value
+        # (including 0.0) is an operator-set cutoff used verbatim. A
+        # resolved threshold of 0 therefore means *exact-match-only* —
+        # it can never accidentally disable unknown rejection.
+        self._max_distance: Optional[float] = (
+            float(self._config["max_distance"])
+            if self._config.get("max_distance") is not None else None)
         self._detector = None
         if self._detect and cv2 is not None \
                 and hasattr(cv2, "CascadeClassifier"):
@@ -238,13 +243,17 @@ class EigenfaceRecognizer(Processor):
 
     def set_gallery(self, gallery: Dict[str, List[List[float]]],
                     max_distance: Optional[float] = None) -> None:
-        """Hot-swap the enrolled gallery (e.g. after FaceGallery pull)."""
+        """Hot-swap the enrolled gallery (e.g. after FaceGallery pull).
+
+        ``max_distance=None`` recalibrates from the new gallery; an
+        explicit value (including 0.0) is used verbatim.
+        """
         self._gallery = {str(k): [list(p) for p in v]
                          for k, v in gallery.items()}
-        if max_distance:
+        if max_distance is not None:
             self._max_distance = float(max_distance)
-        elif not self._max_distance:
-            self._max_distance = _basis.calibrate_threshold(self._gallery)
+        else:
+            self._max_distance = None
 
     def set_basis(self, basis: Dict[str, Any]) -> None:
         self._basis = basis
@@ -266,15 +275,37 @@ class EigenfaceRecognizer(Processor):
                 },
             })
 
+    def _threshold(self) -> tuple:
+        """Resolve the rejection cutoff → (value, state).
+
+        States: ``explicit`` (operator-set, used verbatim — 0.0 means
+        exact-match-only), ``calibrated`` (derived from the enrolled
+        gallery), ``uncalibrated`` (no gallery to calibrate from → 0.0,
+        fail-closed). The value is always a real number; rejection can
+        never be disabled by a missing/false-like threshold.
+        """
+        if self._max_distance is not None:
+            return float(self._max_distance), "explicit"
+        if self._gallery:
+            return _basis.calibrate_threshold(self._gallery), "calibrated"
+        return 0.0, "uncalibrated"
+
     def health(self) -> Dict[str, Any]:
         ok = self._basis is not None
+        threshold, state = self._threshold()
         return {"status": "ok" if ok else "error",
                 "persons": len(self._gallery),
+                "max_distance": threshold, "threshold_state": state,
                 "detail": "" if ok else "no basis configured"}
 
     # -- crop resolution ---------------------------------------------------
     def _crop(self, window: SensorWindow, frame) -> Optional[Any]:
-        meta = dict(getattr(window, "metadata", {}) or {})
+        # Upstream-detector handoff lives in ``window.preprocessing``
+        # (the canonical per-window metadata field — SensorWindow has no
+        # ``metadata`` attribute). ``window.metadata`` is still accepted
+        # for duck-typed windows.
+        meta = dict(getattr(window, "preprocessing", {}) or {})
+        meta.update(dict(getattr(window, "metadata", {}) or {}))
         crop = meta.get("face_crop")
         if crop is not None:
             return crop
@@ -318,21 +349,29 @@ class EigenfaceRecognizer(Processor):
                               task="face_recognition",
                               metadata={"reason": "undecodable crop"})
         name, dist = _basis.nearest(self._gallery, projection)
-        threshold = self._max_distance
-        matched = name is not None and (not threshold or dist <= threshold)
-        label = f"person:{name}" if matched else (
-            "person:unknown" if name is not None else "no_face")
+        threshold, threshold_state = self._threshold()
+        # Rejection is fail-closed: a face is only accepted when its
+        # distance is within the resolved cutoff. A zero/unset threshold
+        # resolves to 0.0 → exact-match-only — never "accept nearest".
+        matched = (name is not None and dist <= threshold)
+        # A face was found but matched nobody enrolled (or the gallery is
+        # empty) — explicitly unknown, never no_face and never the
+        # numerically-closest person.
+        label = f"person:{name}" if matched else "person:unknown"
         # Confidence: distance mapped into (0,1] — 1.0 at d=0, ~0 at the
         # threshold. Unknown faces report low confidence by construction.
-        confidence = (max(0.05, 1.0 - dist / threshold)
-                      if matched and threshold else
-                      (0.5 if matched else 0.2))
+        if matched:
+            confidence = (1.0 if threshold <= 0
+                          else max(0.05, 1.0 - dist / threshold))
+        else:
+            confidence = 0.2
         return Prediction(
             label=label, confidence=round(confidence, 4),
             task="face_recognition",
             metadata={"person": name if matched else None,
                       "distance": round(dist, 4),
                       "max_distance": threshold,
+                      "threshold_state": threshold_state,
                       "matched": bool(matched),
                       "frame_sensor": getattr(sample, "sensor_id", ""),
                       "frame_device": getattr(sample, "device_id", "")})

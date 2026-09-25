@@ -202,7 +202,8 @@ def _validate(instance: dict, schema: dict, path: str = "") -> list:
 def main(argv: list) -> int:
     schemas = {}
     for f in sorted(SCHEMA_DIR.glob("*.schema.json")):
-        schemas[f.stem.replace(".schema", "")] = json.loads(f.read_text())
+        schemas[f.stem.replace(".schema", "")] = json.loads(
+            f.read_text(encoding="utf-8"))
 
     if not argv or argv[0] not in ("ts", "dart", "validate"):
         print(__doc__)
@@ -224,6 +225,7 @@ def main(argv: list) -> int:
             print(f"{path}: no schema named {name!r}")
             rc = 1
             continue
+            encoding="utf-8"
         errors = _validate(json.loads(path.read_text()), schema)
         if errors:
             rc = 1

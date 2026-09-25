@@ -33,6 +33,39 @@ LEGACY_MANIFEST_SCHEMAS = frozenset({
     "thoth-minute-manifest/v5",
 })
 
+#: Legacy chunk-era keys normalized at the compatibility boundary. The
+#: canonical model speaks seconds/minutes only — these renames are applied
+#: recursively to every legacy-derived payload before it can leave this
+#: module, so domain-level ``chunk`` terminology never reaches API output.
+_LEGACY_KEY_MAP = {
+    "chunk_index": "second_index",
+    "expected_chunks": "expected_seconds",
+    "stored_chunks": "stored_seconds",
+    "analyzed_chunks": "analyzed_seconds",
+    "chunk_seconds": "seconds_per_entry",
+    "chunk_count": "second_count",
+    "chunks": "seconds",
+}
+
+
+def _strip_chunk_terms(value: Any) -> Any:
+    """Recursively rename legacy chunk keys → second terminology.
+
+    Applied to every legacy-derived structure (progress blocks, prediction
+    timelines, per-source metadata) so the canonical MinuteManifest never
+    carries domain-level ``chunk`` fields. Driver-internal byte buffering
+    may still use the word; it must not appear here.
+    """
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            new_key = _LEGACY_KEY_MAP.get(key, key)
+            out[new_key] = _strip_chunk_terms(item)
+        return out
+    if isinstance(value, list):
+        return [_strip_chunk_terms(v) for v in value]
+    return value
+
 
 def _parse_iso(value: Any) -> Optional[float]:
     if not value:
@@ -95,21 +128,40 @@ def _legacy_predictions(minute_dir: Path,
             pass
     for entry in (manifest.get("model_predictions") or []):
         if isinstance(entry, dict):
-            out.append(dict(entry))
+            e = dict(entry)
+            if "second_index" not in e and "chunk_index" in e:
+                e["second_index"] = e.pop("chunk_index")
+            out.append(e)
     return out
 
 
 def read_minute(minute_dir: Any) -> MinuteManifest:
     """Read one minute directory into a canonical :class:`MinuteManifest`.
 
-    Accepts canonical ``thoth-minute/v1`` manifests directly and legacy
-    v5–v7 manifests via normalization. Never mutates files on disk.
+    Accepts canonical ``thoth-minute/v1`` manifests (``minute.json``, as
+    written by :func:`write_minute_manifest`) directly and legacy v5–v7
+    manifests (``manifest.json``) via normalization. When both exist the
+    canonical file wins — it is the migrated source of truth. Never
+    mutates files on disk.
     """
     minute_dir = Path(minute_dir)
+    canonical_path = minute_dir / "minute.json"
+    if canonical_path.exists():
+        try:
+            data = json.loads(canonical_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            return MinuteManifest.from_dict(data)
+
     manifest_path = minute_dir / "manifest.json"
     manifest: Dict[str, Any] = {}
     if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
     if not isinstance(manifest, dict):
         manifest = {}
 
@@ -189,16 +241,17 @@ def read_minute(minute_dir: Any) -> MinuteManifest:
                                  or manifest.get("expected_chunks")),
             "seconds": seconds,
         },
-        source_metadata={
+        source_metadata=_strip_chunk_terms({
             "schema": manifest.get("schema"),
             "sensors_enabled": manifest.get("sensors_enabled") or [],
             "container": manifest.get("container"),
             "device_name": manifest.get("device_name"),
-        },
+        }),
         files=files,
         checksums={},
         metadata={"legacy_schema": manifest.get("schema"),
-                  "progress": manifest.get("progress")},
+                  "progress": _strip_chunk_terms(
+                      manifest.get("progress") or {})},
     )
 
 

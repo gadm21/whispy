@@ -32,11 +32,13 @@ class ActionStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     UNSUPPORTED = "unsupported"
+    EXPIRED = "expired"                      # never executed — outlived expiry
 
     @property
     def terminal(self) -> bool:
         return self in (
-            ActionStatus.SUCCEEDED, ActionStatus.FAILED, ActionStatus.UNSUPPORTED)
+            ActionStatus.SUCCEEDED, ActionStatus.FAILED,
+            ActionStatus.UNSUPPORTED, ActionStatus.EXPIRED)
 
 
 class DeploymentState(str, Enum):
