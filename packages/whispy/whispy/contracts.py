@@ -328,6 +328,9 @@ class Device:
     capabilities: List[str] = field(default_factory=list)
     sensors: List[Sensor] = field(default_factory=list)
     health: Dict[str, Any] = field(default_factory=dict)
+    # LAN endpoint advertised by the node: {"host","port","token"} — same-
+    # network clients reach the local API directly, Brain is only a registry.
+    local_api: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         out = asdict(self)
@@ -351,6 +354,7 @@ class Device:
             capabilities=list(data.get("capabilities") or []),
             sensors=[Sensor.from_dict(s) for s in (data.get("sensors") or [])],
             health=dict(data.get("health") or {}),
+            local_api=dict(data.get("local_api") or {}),
         )
 
 

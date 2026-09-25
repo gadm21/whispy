@@ -156,6 +156,22 @@ class RemoteDevice(DeviceHandle):
             self._http.request("GET", f"/v1/devices/{self._info.id}"))
         return self._info
 
+    def lan(self, timeout: int = 15):
+        """Reach the node's authenticated local API on the same LAN.
+
+        Uses the ``local_api`` endpoint the node advertises in its
+        heartbeat — Brain is only a registry; traffic stays on the LAN.
+        Raises :class:`NotFoundError` when the node exposes none (offline,
+        legacy stacks, or nodes behind another network).
+        """
+        from .local import LanDevice
+        api = self._info.local_api or {}
+        host, port, token = api.get("host"), api.get("port"), api.get("token")
+        if not (host and port):
+            raise NotFoundError(
+                f"device {self._info.name!r} advertises no LAN endpoint")
+        return LanDevice(host, port=int(port), token=token, timeout=timeout)
+
     def sensors(self) -> List[Sensor]:
         payload = self._http.request(
             "GET", f"/v1/devices/{self._info.id}/sensors")
