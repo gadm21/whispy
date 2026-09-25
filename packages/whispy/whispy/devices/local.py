@@ -142,6 +142,8 @@ class LocalDevice(DeviceHandle):
         self._act_adapters: Dict[str, Any] = dict(actuator_adapters or {})
         self._configs: Dict[str, Dict[str, Any]] = {}
         self._handles: List[Any] = []
+        self._desc_cache: Optional[List[SensorDescriptor]] = None
+        self._act_cache: Optional[List[ActuatorDescriptor]] = None
         if drivers is None and adapters is None:
             self._autodetect()
         else:
@@ -208,8 +210,7 @@ class LocalDevice(DeviceHandle):
         )
 
     # -- sensors ---------------------------------------------------------------
-    def sensor_descriptors(self) -> List[SensorDescriptor]:
-        """Physical sensor inventory from every adapter's discover()."""
+    def _discover_sensors(self) -> List[SensorDescriptor]:
         out: List[SensorDescriptor] = []
         for name, adapter in self._adapters.items():
             try:
@@ -220,6 +221,25 @@ class LocalDevice(DeviceHandle):
             except Exception:
                 continue
         return out
+
+    def sensor_descriptors(self) -> List[SensorDescriptor]:
+        """Physical sensor inventory — cached.
+
+        ``discover()`` probes real hardware; on some drivers (DirectShow)
+        probing a capture index steals or blacks out a graph another handle
+        is streaming from. The daemon calls this per heartbeat, so the
+        result is cached and only recomputed on ``refresh()`` or when
+        ``sensor()`` can't resolve an id.
+        """
+        if self._desc_cache is None:
+            self._desc_cache = self._discover_sensors()
+        return self._desc_cache
+
+    def refresh(self) -> "LocalDevice":
+        """Drop cached descriptors; next call re-probes hardware."""
+        self._desc_cache = None
+        self._act_cache = None
+        return self
 
     def sensors(self) -> List[Sensor]:
         return [d.to_sensor() for d in self.sensor_descriptors()]
@@ -243,6 +263,13 @@ class LocalDevice(DeviceHandle):
             return self._sensor_handle(matches[0])
         if len(matches) > 1:
             raise AmbiguousSourceError(key, [d.id for d in matches])
+
+        # Unknown id — maybe hardware appeared since the cached probe.
+        if self._desc_cache is not None:
+            self._desc_cache = self._discover_sensors()
+            for desc in self._desc_cache:
+                if key in (desc.id, desc.name) and (desc.id or desc.name):
+                    return self._sensor_handle(desc)
 
         for name, adapter in self._adapters.items():
             if name == key:
@@ -276,16 +303,19 @@ class LocalDevice(DeviceHandle):
 
     # -- actuators -------------------------------------------------------------
     def actuators(self) -> List[ActuatorDescriptor]:
-        out: List[ActuatorDescriptor] = []
-        for name, adapter in self._act_adapters.items():
-            try:
-                for desc in adapter.discover():
-                    if not desc.adapter:
-                        desc.adapter = name
-                    out.append(desc)
-            except Exception:
-                continue
-        return out
+        """Actuator inventory — cached like sensor_descriptors()."""
+        if self._act_cache is None:
+            out: List[ActuatorDescriptor] = []
+            for name, adapter in self._act_adapters.items():
+                try:
+                    for desc in adapter.discover():
+                        if not desc.adapter:
+                            desc.adapter = name
+                        out.append(desc)
+                except Exception:
+                    continue
+            self._act_cache = out
+        return self._act_cache
 
     def actuator(self, actuator_id_or_kind: str) -> _LocalActuatorHandle:
         key = actuator_id_or_kind
