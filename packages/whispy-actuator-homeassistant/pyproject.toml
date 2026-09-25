@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-actuator-homeassistant"
+version = "0.1.0"
+description = "Home Assistant entity actuator adapter for Whispy (lights, switches)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["whispy>=0.1.0"]
+
+[project.entry-points."whispy.actuators"]
+home-assistant = "whispy_actuator_homeassistant:HomeAssistantAdapter"
+
+[tool.setuptools.packages.find]
+include = ["whispy_actuator_homeassistant*"]

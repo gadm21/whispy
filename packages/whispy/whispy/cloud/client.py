@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -135,5 +136,38 @@ class Client:
         payload = self._http.request("GET", "/v1/captures", params=params)
         return payload.get("captures") or []
 
+    # -- face assets (eigenface store) ------------------------------------------
+    def face_gallery(self, ttl_s: float = 300.0):
+        """TTL-cached view of the enrolled gallery + PCA basis bytes."""
+        from .faces import FaceGallery
+        return FaceGallery(
+            fetcher=lambda: self._http.request("GET", "/v1/faces/gallery"),
+            basis_fetcher=lambda: self._http.request(
+                "GET", "/v1/faces/basis", raw=True),
+            ttl_s=ttl_s)
 
-__all__ = ["Client", "DEFAULT_BASE_URL"]
+    def fit_face_basis(self, images: List[bytes],
+                       name: str = "default", image_size: int = 64,
+                       n_components: int = 40) -> Dict[str, Any]:
+        """Fit a PCA basis from raw image bytes (>=2) server-side."""
+        return self._http.request("POST", "/v1/faces/basis", body={
+            "name": name, "image_size": image_size,
+            "n_components": n_components,
+            "images": [base64.b64encode(b).decode() for b in images]})
+
+    def enroll_face(self, name: str, photo: bytes,
+                    mime: str = "image/jpeg") -> Dict[str, Any]:
+        """Enroll one face photo as a person asset (stored projection)."""
+        return self._http.request("POST", "/v1/faces/persons", body={
+            "name": name,
+            "photo_b64": base64.b64encode(photo).decode(),
+            "photo_mime": mime})
+
+    def persons(self, name: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = {"name": name} if name else None
+        payload = self._http.request("GET", "/v1/faces/persons",
+                                     params=params)
+        return payload.get("persons") or []
+
+
+__all__ = ["Client", "DEFAULT_BASE_URL"]  # + face_* methods above

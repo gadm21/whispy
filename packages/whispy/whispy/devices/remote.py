@@ -37,7 +37,8 @@ class _Http:
 
     def request(self, method: str, path: str,
                 params: Optional[dict] = None,
-                body: Optional[dict] = None) -> Any:
+                body: Optional[dict] = None,
+                raw: bool = False) -> Any:
         url = self.base_url + path
         if params:
             qs = urllib.parse.urlencode(
@@ -54,8 +55,11 @@ class _Http:
                                      headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as res:
-                raw = res.read()
-                return json.loads(raw.decode("utf-8")) if raw else {}
+                data_raw = res.read()
+                if raw:
+                    return data_raw
+                return json.loads(data_raw.decode("utf-8")) \
+                    if data_raw else {}
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
             if exc.code == 401:
