@@ -176,22 +176,29 @@ def _builtin_executors() -> Dict[str, Type[Actuator]]:
     from .home_assistant import HomeAssistantActuator
     from .device import DeviceActuator
     from .lan import LanActuator
+    from .notification import NotificationActuator
     from .webhook import WebhookActuator
 
     return {
         "home_assistant": HomeAssistantActuator,
         "device": DeviceActuator,
         "lan": LanActuator,
+        "notification": NotificationActuator,
         "webhook": WebhookActuator,
     }
 
 
+import functools
+
+
+@functools.lru_cache(maxsize=1)
 def actuator_executors() -> Dict[str, Type[Actuator]]:
     """Action-executor plugins: built-ins + ``whispy.actuators`` entries.
 
     Entry points exporting an :class:`Actuator` subclass register under
     their ``actuator_type``; ``ActuatorAdapter`` subclasses in the same
     group are device adapters, not executors, and are skipped here.
+    The scan is cached — entry points are fixed once the process starts.
     """
     from ..plugins import registry
 

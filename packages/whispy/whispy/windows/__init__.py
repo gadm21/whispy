@@ -99,16 +99,22 @@ class WindowFeatures:
 
         if name == "snr_mean":
             for key in ("snr", "radar_snr", "radar"):
-                if key in self._window.samples and self._window.samples[key]:
-                    vals = _flatten(self._window.samples[key])
+                # Exact key first, then id resolution — window.samples is
+                # keyed by sensor id (radar-0), not modality (radar).
+                sid = key if self._window.samples.get(key) else \
+                    resolve_sensor_id(self._window, key)
+                if sid and self._window.samples.get(sid):
+                    vals = _flatten(self._window.samples[sid])
                     if vals:
                         return sum(vals) / len(vals)
             raise KeyError("no SNR-bearing sensor in window")
 
         if name == "rms_accel":
             for key in ("imu", "accel", "accelerometer"):
-                if key in self._window.samples and self._window.samples[key]:
-                    return self._rms_vectors(self._window.samples[key])
+                sid = key if self._window.samples.get(key) else \
+                    resolve_sensor_id(self._window, key)
+                if sid and self._window.samples.get(sid):
+                    return self._rms_vectors(self._window.samples[sid])
             raise KeyError("no IMU/accelerometer sensor in window")
 
         m = self._STAT_RE.fullmatch(name)

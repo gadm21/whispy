@@ -136,6 +136,180 @@ class Client:
         payload = self._http.request("GET", "/v1/captures", params=params)
         return payload.get("captures") or []
 
+    # -- collection control -----------------------------------------------------
+    def capture_start(self, device_id: str,
+                      sensors: Optional[List[str]] = None,
+                      label: Optional[str] = None) -> Dict[str, Any]:
+        """Start a synchronized capture on a node (remote control).
+
+        Rides the same ``POST /v1/devices/{id}/captures`` contract the
+        portal uses — Brain relays to the node over its WS tunnel.
+        ``sensors=None`` captures every available sensor at its native
+        rate (node-side default).
+        """
+        body: Dict[str, Any] = {"sensors": sensors or []}
+        if label:
+            body["label"] = label
+        return self._http.request(
+            "POST", f"/v1/devices/{device_id}/captures", body=body)
+
+    def capture_stop(self, capture_id: str) -> Dict[str, Any]:
+        return self._http.request("POST", f"/v1/captures/{capture_id}/stop")
+
+    def capture_label(self, capture_id: str, label: str,
+                      device_id: Optional[str] = None,
+                      start: Optional[float] = None,
+                      end: Optional[float] = None) -> Dict[str, Any]:
+        """Manual label on a running/stopped capture."""
+        body: Dict[str, Any] = {"label": label}
+        if start is not None:
+            body["start"] = start
+        if end is not None:
+            body["end"] = end
+        if device_id:
+            return self.node_api(device_id, "POST",
+                                 f"/api/captures/{capture_id}/label",
+                                 body=body)
+        return self._http.request(
+            "POST", f"/v1/captures/{capture_id}/label", body=body)
+
+    def node_api(self, device_id: str, method: str, path: str,
+                 body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Generic REST→WS relay to a node's local API (§3).
+
+        ``GET /api/v1/context``, ``POST /api/captures/start``, automations,
+        actuators — anything the node serves is reachable remotely without
+        a VPN; the node answers over its outbound WS tunnel.
+        """
+        return self._http.request(
+            "POST", f"/v1/nodes/{device_id}/api",
+            body={"method": method.upper(), "path": path,
+                  "body": body})
+
+    # -- context ----------------------------------------------------------------
+    def context(self, key: Optional[str] = None,
+                entity_id: Optional[str] = None,
+                active_only: bool = False) -> List[Dict[str, Any]]:
+        """Current context states (``GET /v1/context/state``)."""
+        params = {"key": key, "entity_id": entity_id,
+                  "active_only": active_only or None}
+        payload = self._http.request("GET", "/v1/context/state",
+                                     params=params)
+        return payload.get("states") or []
+
+    def context_snapshot(self) -> Dict[str, Any]:
+        """Entities + relationships + live states in one document."""
+        return self._http.request("GET", "/v1/context/snapshot")
+
+    def context_events(self, key: Optional[str] = None,
+                       since: Optional[float] = None,
+                       limit: int = 200) -> List[Dict[str, Any]]:
+        """Context transitions (``GET /v1/context/events``)."""
+        payload = self._http.request(
+            "GET", "/v1/context/events",
+            params={"key": key, "since": since, "limit": limit})
+        return payload.get("events") or []
+
+    # -- events -----------------------------------------------------------------
+    def events(self, device_id: Optional[str] = None,
+               kind: Optional[str] = None,
+               since: Optional[str] = None,
+               limit: int = 50) -> List[Dict[str, Any]]:
+        """Node event feed (``GET /v1/events``)."""
+        payload = self._http.request(
+            "GET", "/v1/events",
+            params={"device_id": device_id, "kind": kind,
+                    "since": since, "limit": limit})
+        return payload.get("events") or []
+
+    def event_stream(self, device_id: Optional[str] = None,
+                     kind: Optional[str] = None,
+                     last_event_id: Optional[str] = None,
+                     timeout: int = 0):
+        """Subscribe to the live event stream — SSE, no polling.
+
+        Yields parsed event dicts as they arrive. ``last_event_id``
+        resumes after a reconnect (Brain replays rows > id). Caller
+        controls reconnect policy — a simple ``for`` loop over a
+        reconnecting generator covers drop-reconnect.
+        """
+        import urllib.request
+        params = {"device_id": device_id, "kind": kind,
+                  "token": self._http.token}
+        qs = urllib.parse.urlencode(
+            {k: v for k, v in params.items() if v is not None})
+        url = f"{self.base_url}/v1/events/stream?{qs}"
+        headers = {}
+        if self._http.token:
+            headers["Authorization"] = f"Bearer {self._http.token}"
+        if last_event_id:
+            headers["Last-Event-ID"] = str(last_event_id)
+        req = urllib.request.Request(url, headers=headers)
+        res = urllib.request.urlopen(
+            req, timeout=timeout or None)
+        buf = b""
+        event: Dict[str, Any] = {}
+        try:
+            while True:
+                chunk = res.read(4096)
+                if not chunk:
+                    return
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    line = line.rstrip(b"\r")
+                    if not line:
+                        if event:
+                            yield event
+                            event = {}
+                        continue
+                    if line.startswith(b":"):
+                        continue                    # heartbeat comment
+                    if line.startswith(b"id:"):
+                        event["id"] = line[2:].strip().decode()
+                    elif line.startswith(b"event:"):
+                        event["kind"] = line[6:].strip().decode()
+                    elif line.startswith(b"data:"):
+                        try:
+                            event.update(json.loads(
+                                line[5:].strip().decode()))
+                        except ValueError:
+                            event["data_raw"] = line[5:].strip().decode()
+        finally:
+            res.close()
+
+    # -- automation rules (server-side, §17) --------------------------------------
+    def rules(self) -> List[Dict[str, Any]]:
+        payload = self._http.request("GET", "/v1/automation/rules")
+        return payload.get("rules") or []
+
+    def add_rule(self, name: str, when: Dict[str, Any],
+                 then: Dict[str, Any],
+                 cooldown_s: float = 0.0) -> Dict[str, Any]:
+        """Create an edge-triggered context rule, e.g.::
+
+            client.add_rule("occupied→lights",
+                when={"key": "prediction", "equals": "occupied"},
+                then={"actuator_id": "ha-light", "operation": "turn_on",
+                      "device_id": "..."})
+        """
+        return self._http.request("POST", "/v1/automation/rules", body={
+            "name": name, "when": when, "then": then,
+            "cooldown_s": cooldown_s})
+
+    def delete_rule(self, name: str) -> Dict[str, Any]:
+        return self._http.request(
+            "DELETE", f"/v1/automation/rules/{name}")
+
+    # -- webhook subscriptions ----------------------------------------------------
+    def subscribe_webhook(self, url: str,
+                          kinds: Optional[List[str]] = None,
+                          device_id: Optional[str] = None) -> Dict[str, Any]:
+        """POST every matching event to ``url`` (signed, retried)."""
+        payload = self._http.request("POST", "/v1/subscriptions", body={
+            "url": url, "kinds": kinds or [], "device_id": device_id})
+        return payload.get("subscription") or payload
+
     # -- face assets (eigenface store) ------------------------------------------
     def face_gallery(self, ttl_s: float = 300.0):
         """TTL-cached view of the enrolled gallery + PCA basis bytes."""

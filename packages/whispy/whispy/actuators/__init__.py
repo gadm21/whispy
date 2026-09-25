@@ -28,6 +28,7 @@ __all__ = [
     "installed_actuator_adapters",
     "HomeAssistantActuator",
     "DeviceActuator",
+    "NotificationActuator",
     "WebhookActuator",
     "register_handler",
     # commands
