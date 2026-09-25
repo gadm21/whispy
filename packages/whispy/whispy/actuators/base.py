@@ -167,17 +167,21 @@ _ALIASES = {
     "device_action": "device",
     "gpio": "device",
     "local": "device",
+    "remote": "lan",
+    "node": "lan",
 }
 
 
 def _builtin_executors() -> Dict[str, Type[Actuator]]:
     from .home_assistant import HomeAssistantActuator
     from .device import DeviceActuator
+    from .lan import LanActuator
     from .webhook import WebhookActuator
 
     return {
         "home_assistant": HomeAssistantActuator,
         "device": DeviceActuator,
+        "lan": LanActuator,
         "webhook": WebhookActuator,
     }
 
