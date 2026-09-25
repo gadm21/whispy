@@ -21,6 +21,13 @@ except ImportError:  # numpy is a hard dep but keep import-time safety
 
 def _payload_array(sample: SensorSample):
     payload = sample.payload
+    if isinstance(payload, dict):
+        # Structured payloads (e.g. radar_frame) expose scalar features
+        # like snr_db — surface them so rules can reference them.
+        for key in ("snr_db", "value", "reading"):
+            if isinstance(payload.get(key), (int, float)):
+                return [float(payload[key])]
+        return []
     if np is not None:
         return np.asarray(payload, dtype=float)
     if isinstance(payload, (list, tuple)):

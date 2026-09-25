@@ -301,6 +301,11 @@ class LocalDevice(DeviceHandle):
         self._handles.append(handle)
         return handle
 
+    def location(self) -> Dict[str, Any]:
+        """This machine's self-resolved public geo (postal code, city)."""
+        from ..geo import public_geo
+        return public_geo() or {}
+
     # -- actuators -------------------------------------------------------------
     def actuators(self) -> List[ActuatorDescriptor]:
         """Actuator inventory — cached like sensor_descriptors()."""
@@ -536,6 +541,10 @@ class LanDevice(DeviceHandle):
 
     def status(self) -> Dict[str, Any]:
         return self._http.get_json("/api/status")
+
+    def location(self) -> Dict[str, Any]:
+        """This node's self-resolved public geo (postal code, city)."""
+        return self._http.get_json("/api/v1/location")
 
     def captures(self) -> List[Dict[str, Any]]:
         payload = self._http.get_json("/api/captures")

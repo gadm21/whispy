@@ -117,11 +117,27 @@ class _RadarHandle(SensorHandle):
         snr_db = 20.0 * float(np.log10((signal + 1e-9) / (noise + 1e-9)))
         range_profile = magnitude.mean(axis=tuple(range(1, arr.ndim))) \
             if arr.ndim > 1 else magnitude
+        # Downsampled energy map: last two axes = range × azimuth bins.
+        xy_map: List[List[float]] = []
+        if arr.ndim >= 2:
+            m2 = magnitude.reshape(-1, *magnitude.shape[-2:]).mean(axis=0)
+            target = 24
+            ys = np.linspace(0, m2.shape[0], target + 1).astype(int)
+            xs = np.linspace(0, m2.shape[1], target + 1).astype(int)
+            xy_map = []
+            for i in range(target):
+                y0, y1 = ys[i], max(ys[i + 1], ys[i] + 1)
+                row = []
+                for j in range(target):
+                    x0, x1 = xs[j], max(xs[j + 1], xs[j] + 1)
+                    row.append(float(m2[y0:y1, x0:x1].mean()))
+                xy_map.append(row)
         return {
             "encoding": "radar_frame",
             "shape": list(arr.shape),
             "snr_db": round(snr_db, 3),
             "range_profile": range_profile.ravel()[:128].tolist(),
+            "xy_map": xy_map,
             "energy": float((magnitude ** 2).mean()) if magnitude.size else 0.0,
         }
 
