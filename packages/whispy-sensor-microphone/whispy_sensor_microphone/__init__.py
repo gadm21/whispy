@@ -203,6 +203,50 @@ class SoundDeviceMicrophoneAdapter(SensorAdapter):
             maintainer="thothcraft",
         )
 
+    # Host-API preference (lower wins). Windows exposes the same physical
+    # mic under MME/DirectSound/WASAPI — keep one row per device.
+    _HOSTAPI_PRIORITY = {
+        "windows wasapi": 0, "alsa": 0, "core audio": 0,
+        "windows directsound": 1, "pulseaudio": 1,
+        "mme": 2, "windows wdm-ks": 3, "asio": 4,
+    }
+    # PortAudio/ALSA pseudo-devices that alias real hardware.
+    _ALIAS_NAMES = {
+        "microsoft sound mapper - input", "primary sound capture driver",
+        "sound mapper", "default", "sysdefault", "pulse",
+    }
+    # Loopback/output endpoints that expose input channels but are not
+    # microphones (users see them as phantom mics).
+    _DROP_NAMES = (
+        "stereo mix", "what u hear", "wave out mix", "pc speaker",
+        "line in", "microsoft sound mapper", "primary sound capture",
+        "sound mapper",
+    )
+
+    @staticmethod
+    def _norm_name(name: str) -> str:
+        """Collapse API decorations to a physical-device key.
+
+        'Microphone Array 1 (Realtek HD Audio Mic input with SST)' and
+        'Microphone Array (Realtek(R) Audio)' are the same array through
+        different host APIs / channel segments — same key.
+        """
+        import re
+        n = name.strip().lower()
+        n = n.partition("(")[0]                 # "(…)" = driver/API decorator
+        n = re.sub(r"[\s\-_]+", " ", n).strip()
+        n = re.sub(r"\s+\d+$", "", n)           # trailing channel index
+        return n
+
+    def _priority(self, index: int, dev: Dict[str, Any], hostapi: str) -> int:
+        name = str(dev.get("name") or "").lower()
+        prio = self._HOSTAPI_PRIORITY.get(hostapi.lower(), 1)
+        if "hw:" in name:
+            prio -= 1            # explicit ALSA hardware node beats 'default'
+        if name in self._ALIAS_NAMES:
+            prio += 5            # API aliases only if nothing real exists
+        return prio * 10000 + index
+
     def discover(self) -> List[SensorDescriptor]:
         if sd is None:
             return []
@@ -210,21 +254,40 @@ class SoundDeviceMicrophoneAdapter(SensorAdapter):
             devices = sd.query_devices()
         except Exception:
             return []
-        out: List[SensorDescriptor] = []
+        # 1. gather real input endpoints (skip loopback/pseudo inputs)
+        candidates = []
         for index, dev in enumerate(devices):
             if int(dev.get("max_input_channels") or 0) < 1:
+                continue
+            lname = str(dev.get("name") or "").lower()
+            if any(bad in lname for bad in self._DROP_NAMES):
                 continue
             hostapi = ""
             try:
                 hostapi = sd.query_hostapis(dev.get("hostapi", 0))["name"]
             except Exception:
                 pass
+            candidates.append((index, dev, hostapi))
+        # 2. one descriptor per physical device (grouped by friendly name)
+        best: Dict[str, tuple] = {}
+        for index, dev, hostapi in candidates:
+            key = self._norm_name(str(dev.get("name") or f"device-{index}"))
+            cand = (self._priority(index, dev, hostapi), index, dev, hostapi)
+            if key not in best or cand[0] < best[key][0]:
+                best[key] = cand
+        # 3. if only alias/pseudo devices survived, still expose the default
+        real = [c for c in best.values()
+                if self._priority(c[1], c[2], c[3]) < 50000]
+        chosen = real or sorted(best.values(), key=lambda c: c[0])[:1]
+        out: List[SensorDescriptor] = []
+        for _prio, index, dev, hostapi in sorted(chosen):
             hw = f"{hostapi}:{dev.get('name', f'device-{index}')}"
+            pretty = str(dev.get("name") or f"Microphone {index}")
             out.append(SensorDescriptor(
                 id=SensorDescriptor.make_id("microphone", hw),
                 modality="microphone",
                 adapter="microphone",
-                name=str(dev.get("name") or f"Microphone {index}"),
+                name=pretty,
                 hardware_id=hw,
                 capabilities=["pcm_audio", "pcm_s16le", "mono"],
                 config_schema=self.metadata().config_schema,

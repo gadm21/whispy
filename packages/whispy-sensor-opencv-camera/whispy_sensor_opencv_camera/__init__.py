@@ -116,39 +116,44 @@ class _CameraHandle(SensorHandle):
         period = 1.0 / fps if fps > 0 else 0.0
         quality = int(self._config.get("jpeg_quality") or 80)
         count = 0
-        while True:
-            with self._lock:
-                ok, frame = cap.read()
-            if not ok or frame is None:
-                time.sleep(0.05)
-                continue
-            ok, buf = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-            if not ok:
-                continue
-            h, w = frame.shape[:2]
-            yield SensorSample(
-                device_id="",
-                sensor_id=self._desc.id,
-                sensor_type="camera",
-                timestamp=time.time(),
-                sequence=next(self._seq),
-                payload_type="jpeg",
-                payload={
-                    "encoding": "jpeg",
-                    "width": int(w),
-                    "height": int(h),
-                    "data": base64.b64encode(buf.tobytes()).decode("ascii"),
-                },
-                sample_rate=fps,
-                metadata={"adapter": self._desc.adapter,
-                          "hardware_id": self._desc.hardware_id},
-            )
-            count += 1
-            if max_samples is not None and count >= max_samples:
-                return
-            if period:
-                time.sleep(period)
+        try:
+            while True:
+                with self._lock:
+                    ok, frame = cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.05)
+                    continue
+                ok, buf = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if not ok:
+                    continue
+                h, w = frame.shape[:2]
+                yield SensorSample(
+                    device_id="",
+                    sensor_id=self._desc.id,
+                    sensor_type="camera",
+                    timestamp=time.time(),
+                    sequence=next(self._seq),
+                    payload_type="jpeg",
+                    payload={
+                        "encoding": "jpeg",
+                        "width": int(w),
+                        "height": int(h),
+                        "data": base64.b64encode(buf.tobytes()).decode("ascii"),
+                    },
+                    sample_rate=fps,
+                    metadata={"adapter": self._desc.adapter,
+                              "hardware_id": self._desc.hardware_id},
+                )
+                count += 1
+                if max_samples is not None and count >= max_samples:
+                    return
+                if period:
+                    time.sleep(period)
+        finally:
+            # Release the sensor so the camera's privacy LED turns off the
+            # moment nobody is streaming — and re-opens on the next tail.
+            self.close()
 
     def latest(self) -> Optional[SensorSample]:
         for sample in self.stream(max_samples=1):
@@ -204,8 +209,22 @@ class OpenCvCameraAdapter(SensorAdapter):
                 if not cap.isOpened():
                     cap.release()
                     continue
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                # isOpened() alone isn't enough: Linux exposes non-capture
+                # V4L2 nodes (codec/M2M/ISP) that "open" but never produce
+                # frames — the Pi reported a phantom camera. Require a real
+                # frame (up to ~1s) before advertising the device.
+                deadline = time.time() + 1.0
+                ok, frame = False, None
+                while time.time() < deadline:
+                    ok, frame = cap.read()
+                    if ok and frame is not None and frame.size:
+                        break
+                    time.sleep(0.05)
+                if not ok or frame is None or not getattr(frame, "size", 0):
+                    cap.release()
+                    continue
+                width = int(frame.shape[1] if getattr(frame, "size", 0) else 0)
+                height = int(frame.shape[0] if getattr(frame, "size", 0) else 0)
                 fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
             except Exception:
                 if cap is not None:

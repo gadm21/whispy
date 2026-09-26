@@ -161,6 +161,12 @@ class CsiSensorAdapter(SensorAdapter):
     def discover(self) -> List[SensorDescriptor]:
         sources = self._sources if self._sources is not None \
             else _configured_sources()
+        if not sources:
+            # CSI transmitters broadcast blindly over UDP — no handshake to
+            # discover. Always expose the standard listen socket so a node
+            # with a receiver on the LAN reports the sensor immediately.
+            sources = [{"id": "csi-listener", "name": "Wi-Fi CSI receiver",
+                        "host": "0.0.0.0", "port": 5500}]
         out: List[SensorDescriptor] = []
         for src in sources:
             sid = str(src.get("id") or f"{src.get('host')}:{src.get('port')}")
