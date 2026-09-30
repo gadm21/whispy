@@ -1,0 +1,384 @@
+# Vendored from MMW-HAT-Release/utility/BGT60TR13C.py — identical driver,
+# only the constants import was rewritten for package layout.
+import datetime
+import os
+
+import spidev
+import logging
+import time
+import queue
+import threading
+from gpiozero import DigitalInputDevice, DigitalOutputDevice
+
+from .constants import *
+
+RET_VAL_OK = 0
+RET_VAL_ERR = -1
+
+class BGT60TR13C:
+    def __init__(self, spi_bus=0, spi_dev=0, spi_speed=10_000_000, rst_pin=12, irq_pin=25, version=0, save_to_file=None, strict_gpio=False):
+        self.__spi = None
+        self.__rst = None
+        self.__irq = None
+        self.__data_collection_thread = None
+        self.__data_collection_stop_event = threading.Event()
+        self.__file_fd = None
+
+        try:
+            self.__spi = spidev.SpiDev()
+            self.__spi.open(spi_bus, spi_dev)
+            self.__spi.max_speed_hz = spi_speed
+            self.__spi.mode = 0
+            self.__rst = self._claim_output_gpio(rst_pin, [17, 27, 22], "reset")
+            self.__irq = self._claim_input_gpio(irq_pin, [24, 23, 18], "irq")
+            if strict_gpio and (self.__rst is None or self.__irq is None):
+                raise RuntimeError("GPIO busy: radar reset/irq pins could not be claimed")
+            if self.__rst is not None:
+                self.hard_reset()
+        except Exception:
+            self.close()
+            raise
+        self.frame_buffer = queue.Queue(maxsize=128) # It is used to hold FMCW frames. Each one in it is a complete frame.
+        self.__sub_frame_buffer = [] # It is used to hold incomplete FMCW frames segments, which come from SPI burst read. Once one complete frame is received, it will be cleared. It is in bytes.
+
+        self.__num_samples_per_frame = 0
+        self.__num_bytes_per_frame = 0
+        self.__num_sampler_per_burst = 0
+        self.__last_gsr_reg = 0
+
+        self.__version = version
+        self.__seq = 0
+        self.__save_to_file = save_to_file
+
+    def set_fifo_parameters(self, num_samples_per_frame, num_samples_irq, num_sampler_per_burst):
+        # Note that regular Raspberry PI spidev has a limit of 4096 bytes per transfer. In addition, the frame size may be larger than buffer size. So 3 parameters are used to control it.
+        # num_samples_frame: The number of samples for one FMCW frame.
+        # num_samples_irq: The number of samples to trigger the interrupt.
+        # num_sampler_burst: The number of samples for each SPI burst read.
+
+        logging.info(f"num_samples_per_frame: {num_samples_per_frame}")
+        logging.info(f"num_samples_irq: {num_samples_irq}")
+        logging.info(f"num_sampler_per_burst: {num_sampler_per_burst}")
+
+        self.__num_samples_per_frame = num_samples_per_frame
+        self.__num_bytes_per_frame = (num_samples_per_frame>>1)*3
+        self.__num_sampler_per_burst = num_sampler_per_burst
+        self.__set_fifo_limit(num_samples_irq)
+
+    def __set_reg(self, reg_addr, data):
+        # Build the SPI register address and data
+        temp = (reg_addr << BGT60TRXX_SPI_REGADR_POS) & BGT60TRXX_SPI_REGADR_MSK
+        temp |= BGT60TRXX_SPI_WR_OP_MSK  # Set the write operation flag
+        temp |= (data << BGT60TRXX_SPI_DATA_POS) & BGT60TRXX_SPI_DATA_MSK
+
+        # Convert data to 4-byte transmission format
+        tx_data = [temp >> 24 & 0xFF, temp >> 16 & 0xFF, temp >> 8 & 0xFF, temp & 0xFF]
+
+        # Send data through SPI, and read SPI at the same time
+        rx_data = self.__spi.xfer2(tx_data)
+        result = (rx_data[0] << 24) | (rx_data[1] << 16) | (rx_data[2] << 8) | rx_data[3]
+        self.__last_gsr_reg = rx_data[0]
+
+        return result
+
+    def __get_reg(self, reg_addr):
+        # Build the SPI register address
+        temp = (reg_addr << BGT60TRXX_SPI_REGADR_POS) & BGT60TRXX_SPI_REGADR_MSK
+
+        # Convert data to 4-byte transmission format
+        tx_data = [temp >> 24 & 0xFF, temp >> 16 & 0xFF, temp >> 8 & 0xFF, temp & 0xFF]
+
+        # Send read command and receive data
+        rx_data = self.__spi.xfer2(tx_data)
+        result = (rx_data[0] << 24) | (rx_data[1] << 16) | (rx_data[2] << 8) | rx_data[3]
+        self.__last_gsr_reg = rx_data[0]
+
+        return result
+
+    def __get_fifo_data(self, num_samples):
+        fifo_data = None
+        if 0 < num_samples >> 1 <= BGT60TRXX_REG_FSTAT_TR13C_FIFO_SIZE and num_samples % 2 == 0:
+            tx_data = [BGT60TRXX_SPI_BURST_MODE_CMD >> 24 & 0xFF,
+                       BGT60TRXX_REG_FIFO_TR13C << BGT60TRXX_SPI_BURST_MODE_SADR_POS >> 16 & 0xFF,
+                       0x00, 0x00] + [0x00] * ((num_samples >> 1) * 3)
+            rx_data = self.__spi.xfer2(tx_data)
+            self.__last_gsr_reg = rx_data[0]
+            if self.check_gsr_reg() != RET_VAL_OK:
+                logging.error("GSR Error Detected")
+                self.print_gsr_reg()
+            else:
+                fifo_data = rx_data[4:]
+        else:
+            logging.error("Invalid num_samples.")
+        return fifo_data
+
+    def check_chip_id(self):
+        chip_id = self.__get_reg(BGT60TRXX_REG_CHIP_ID)
+        logging.info(f"CHIP_ID: 0x{chip_id:08X}")
+        chip_id_digital = (chip_id & BGT60TRXX_REG_CHIP_ID_DIGITAL_ID_MSK) >> BGT60TRXX_REG_CHIP_ID_DIGITAL_ID_POS
+        chip_id_rf = (chip_id & BGT60TRXX_REG_CHIP_ID_RF_ID_MSK) >> BGT60TRXX_REG_CHIP_ID_RF_ID_POS
+
+        # Determine the device type based on extracted IDs
+        if chip_id_digital == 3 and chip_id_rf == 3:
+            logging.info("This chip is BGT60TR13C.")
+            return RET_VAL_OK
+        else:
+            logging.info("Chip is NOT BGT60TR13C.")
+            return RET_VAL_ERR
+
+    def load_register_config_file(self, file_name):
+        logging.info(f"Loading radar_config file: {file_name}")
+        with open(file_name, 'r') as file:
+            for line in file:
+                line = line.strip()
+                parts = line.split()
+                if len(parts) == 3:
+                    label, address_str, value_str = parts
+                    address = int(address_str, 16)
+                    value = int(value_str, 16)
+                    if address == BGT60TRXX_REG_SFCTL:
+                        if self.__spi.max_speed_hz>20_000_000:
+                            value |= BGT60TRXX_REG_SFCTL_MISO_HS_READ_MSK
+                        else:
+                            value &= ~BGT60TRXX_REG_SFCTL_MISO_HS_READ_MSK
+                    self.__set_reg(address, value)
+                else:
+                    raise RuntimeError(f"Line format is incorrect: {line}.")
+
+    def start(self, save_file_name=None):
+        if self.__data_collection_thread and self.__data_collection_thread.is_alive():
+            self.stop()
+        if self.__data_collection_thread is None or not self.__data_collection_thread.is_alive():
+            self.__data_collection_stop_event.clear()
+            self.__data_collection_thread = threading.Thread(target=self.__data_collection)
+            self.__data_collection_thread.start()
+        if self.soft_reset(BGT60TRXX_RESET_FSM) != RET_VAL_OK:
+            return RET_VAL_ERR
+        if self.__file_fd is not None:
+            self.__file_fd.close()
+            self.__file_fd = None
+        if self.__save_to_file is not None:
+            # Get the current timestamp at millisecond precision
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+
+            # Add the timestamp to the filename
+            filename_with_timestamp = f"{self.__save_to_file}_{timestamp}.bin"
+
+            # Ensure the directory exists
+            directory = os.path.dirname(filename_with_timestamp)
+            if directory:  # Check if a directory is specified in the path
+                os.makedirs(directory, exist_ok=True)
+
+            self.__file_fd = open(filename_with_timestamp, "wb")
+
+        self.__seq = 0
+        status = self.__get_reg(BGT60TRXX_REG_MAIN)
+        tmp = status | BGT60TRXX_REG_MAIN_FRAME_START_MSK
+        self.__set_reg(BGT60TRXX_REG_MAIN, tmp)
+        return RET_VAL_OK
+
+    def stop(self):
+        ret_temp = RET_VAL_OK
+        if self.__spi is not None:
+            if self.soft_reset(BGT60TRXX_RESET_FSM) != RET_VAL_OK:
+                ret_temp = RET_VAL_ERR
+        if self.__data_collection_thread is not None and self.__data_collection_thread.is_alive():
+            self.__data_collection_stop_event.set()
+            self.__data_collection_thread.join()
+        if self.__file_fd is not None:
+            self.__file_fd.close()
+            self.__file_fd = None
+        if self.__irq is not None:
+            self.__irq.close()
+            self.__irq = None
+        if self.__rst is not None:
+            self.__rst.close()
+            self.__rst = None
+        if self.__spi is not None:
+            self.__spi.close()
+            self.__spi = None
+        return ret_temp
+
+    def close(self):
+        if self.__data_collection_thread is not None and self.__data_collection_thread.is_alive():
+            self.__data_collection_stop_event.set()
+            self.__data_collection_thread.join()
+        if self.__file_fd is not None:
+            self.__file_fd.close()
+            self.__file_fd = None
+        if self.__irq is not None:
+            self.__irq.close()
+            self.__irq = None
+        if self.__rst is not None:
+            self.__rst.close()
+            self.__rst = None
+        if self.__spi is not None:
+            self.__spi.close()
+            self.__spi = None
+
+    def soft_reset(self, reset_type):
+        self.__sub_frame_buffer = []
+        status = self.__get_reg(BGT60TRXX_REG_MAIN)
+        tmp = status | reset_type
+        self.__set_reg(BGT60TRXX_REG_MAIN, tmp)
+
+        time_out_cnt = 0
+        N = 10
+        for i in range(N):
+            time.sleep(0.01)
+            status = self.__get_reg(BGT60TRXX_REG_MAIN)
+            if status & reset_type == 0:
+               break
+            time_out_cnt += 1
+        if time_out_cnt == N:
+            logging.error("Soft reset timeout! Hard reset required.")
+            return RET_VAL_ERR
+        else:
+            time.sleep(0.01)
+            return RET_VAL_OK
+
+    def hard_reset(self):
+        if self.__rst is None:
+            logging.info("Skipping hard reset because reset GPIO is unavailable.")
+            return
+        self.__rst.on()
+        time.sleep(0.01)
+        self.__rst.off()
+        time.sleep(0.01)
+        self.__rst.on()
+        time.sleep(0.01)
+
+    def __set_fifo_limit(self, num_samples):
+        if 0 < num_samples>>1 <= BGT60TRXX_REG_FSTAT_TR13C_FIFO_SIZE and num_samples % 2 == 0:
+            tmp = self.__get_reg(BGT60TRXX_REG_SFCTL)
+            tmp &= ~BGT60TRXX_REG_SFCTL_FIFO_CREF_MSK
+            # The FIFO is 24-bit wide, which is 2 12-bit ADC samples.
+            tmp |= (((num_samples >> 1) - 1) << BGT60TRXX_REG_SFCTL_FIFO_CREF_POS) & BGT60TRXX_REG_SFCTL_FIFO_CREF_MSK
+            self.__set_reg(BGT60TRXX_REG_SFCTL, tmp)
+            return RET_VAL_OK
+        else:
+            logging.error("Invalid num_samples.")
+            return RET_VAL_ERR
+
+    def print_gsr_reg(self):
+        if self.__last_gsr_reg & BGT60TRXX_REG_GSR0_FOU_ERR_MSK:
+            logging.info("GSR FIFO OVERFLOW/UNDERFLOW ERROR: 1")
+        else:
+            logging.info("GSR FIFO OVERFLOW/UNDERFLOW ERROR: 0")
+
+        if self.__last_gsr_reg & BGT60TRXX_REG_GSR0_MISO_HS_READ_MSK:
+            logging.info("GSR MISO HS: 1")
+        else:
+            logging.info("GSR MISO HS: 0")
+
+        if self.__last_gsr_reg & BGT60TRXX_REG_GSR0_SPI_BURST_ERR_MSK:
+            logging.info("GSR SPI BURST ERR: 1")
+        else:
+            logging.info("GSR SPI BURST ERR: 0")
+
+        if self.__last_gsr_reg & BGT60TRXX_REG_GSR0_CLK_NUM_ERR_MSK:
+            logging.info("GSR CLOCK NUMBER ERR: 1")
+        else:
+            logging.info("GSR CLOCK NUMBER ERR: 0")
+
+    def check_gsr_reg(self):
+        if self.__last_gsr_reg & (BGT60TRXX_REG_GSR0_FOU_ERR_MSK | BGT60TRXX_REG_GSR0_SPI_BURST_ERR_MSK | BGT60TRXX_REG_GSR0_CLK_NUM_ERR_MSK):
+            return RET_VAL_ERR
+        else:
+            return RET_VAL_OK
+
+    def __fifo_fill_level(self):
+        """Current FIFO fill in samples, or -1 when the read fails."""
+        try:
+            fstat = self.__get_reg(BGT60TRXX_REG_FSTAT_TR13C)
+        except Exception:
+            return -1
+        return int(fstat & BGT60TRXX_REG_FSTAT_FILL_STATUS_MSK)
+
+    def __data_collection(self):
+        logging.debug("Data collection thread started.")
+        while not self.__data_collection_stop_event.is_set():
+            # Drain on FIFO fill level rather than the IRQ pin alone: GPIO edge
+            # notification can stall under process load, which lets the FIFO
+            # overflow and wedge capture for the rest of the minute.
+            fill = self.__fifo_fill_level()
+            if fill <= 0:
+                time.sleep(0.001)
+                continue
+            while not self.__data_collection_stop_event.is_set():
+                fill = self.__fifo_fill_level()
+                if fill < self.__num_sampler_per_burst:
+                    break
+                fifo_data = self.__get_fifo_data(self.__num_sampler_per_burst)
+                if fifo_data is None:
+                    # A latched FIFO overflow wedges every further burst read.
+                    # Reset FSM+FIFO, then re-arm FRAME_START so streaming
+                    # resumes at a clean frame boundary (a FIFO-only reset
+                    # would lose byte alignment; an FSM reset without restart
+                    # would stop production entirely).
+                    logging.warning("Radar FIFO error; resetting FSM/FIFO to recover")
+                    self.soft_reset(BGT60TRXX_RESET_FSM | BGT60TRXX_RESET_FIFO)
+                    status = self.__get_reg(BGT60TRXX_REG_MAIN)
+                    self.__set_reg(BGT60TRXX_REG_MAIN, status | BGT60TRXX_REG_MAIN_FRAME_START_MSK)
+                    break
+                try:
+                    self.__sub_frame_buffer += fifo_data
+                    if len(self.__sub_frame_buffer) >= self.__num_bytes_per_frame:
+                        frame = self.__sub_frame_buffer[:self.__num_bytes_per_frame]
+                        self.__sub_frame_buffer = self.__sub_frame_buffer[self.__num_bytes_per_frame:]
+                        full_frame = []
+                        if self.__version == 0:
+                            # version(4 -byte) seq(4-byte) length(4-byte) + data(length-byte)
+                            full_frame = (self.__version.to_bytes(4, byteorder='little', signed=False) +
+                                          self.__seq.to_bytes(4, byteorder='little', signed=False) +
+                                          len(frame).to_bytes(4, byteorder='little', signed=False) +
+                                          bytes(frame))
+                            self.__seq += 1
+                        if self.__file_fd is not None:
+                            self.__file_fd.write(full_frame)
+                        try:
+                            self.frame_buffer.put_nowait(full_frame)
+                        except queue.Full:
+                            pass
+                except queue.Full:
+                    pass
+        logging.debug("Data collection thread stopped.")
+
+    @staticmethod
+    def _try_claim_gpio(claim_fn, pins, label):
+        last_exc = None
+        for pin in [pins[0]] + [candidate for candidate in pins[1:] if candidate != pins[0]]:
+            try:
+                return claim_fn(pin), pin
+            except Exception as exc:
+                last_exc = exc
+                logging.warning("Unable to claim %s GPIO %s: %s", label, pin, exc)
+        if last_exc is not None:
+            logging.warning("No %s GPIO could be claimed; continuing without %s pin.", label, label)
+        return None, None
+
+    def _claim_output_gpio(self, preferred_pin, fallback_pins, label):
+        pins = [preferred_pin, *fallback_pins]
+        device, pin = self._try_claim_gpio(lambda p: DigitalOutputDevice(p), pins, label)
+        if device is None:
+            return None
+        logging.info("Using %s GPIO %s for %s", label, pin, label)
+        return device
+
+    def _claim_input_gpio(self, preferred_pin, fallback_pins, label):
+        pins = [preferred_pin, *fallback_pins]
+        device, pin = self._try_claim_gpio(
+            lambda p: DigitalInputDevice(p, pull_up=False, bounce_time=0.001),
+            pins,
+            label,
+        )
+        if device is None:
+            return None
+        logging.info("Using %s GPIO %s for %s", label, pin, label)
+        return device
+
+    def __del__(self):
+        try:
+            self.stop()
+        except Exception:
+            pass

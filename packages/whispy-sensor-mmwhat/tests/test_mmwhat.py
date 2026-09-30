@@ -1,4 +1,6 @@
 """whispy-sensor-mmwhat: frame decode + adapter conformance."""
+import os
+
 import numpy as np
 
 from whispy.conformance import check_sensor_adapter
@@ -70,6 +72,18 @@ def test_parse_radar_cfg_three_rx():
     assert cfg["num_antennas"] == 3
     assert cfg["num_chirps_per_frame"] == 64
     assert abs(cfg["frame_rate"] - 10.0) < 0.1
+
+
+def test_vendored_config_is_3rx():
+    """Zero-config path: no release tree → vendored radar_config, rx_mask=7."""
+    import whispy_sensor_mmwhat as m
+    cfg_dir = m._resolve_config_dir(None, None)
+    assert cfg_dir is not None
+    assert m._PKG_CONFIG_BASE in os.path.abspath(cfg_dir)
+    import json
+    with open(m._find_one(cfg_dir, m._SETTINGS_RE)) as fh:
+        cfg = m._parse_radar_cfg(json.load(fh))
+    assert cfg["num_antennas"] == 3
 
 
 def test_conformance():

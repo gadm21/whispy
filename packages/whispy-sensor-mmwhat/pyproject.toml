@@ -21,3 +21,6 @@ mmwhat-radar = "whispy_sensor_mmwhat:MmwhatRadarAdapter"
 
 [tool.setuptools.packages.find]
 include = ["whispy_sensor_mmwhat*"]
+
+[tool.setuptools.package-data]
+whispy_sensor_mmwhat = ["radar_config/**/*"]

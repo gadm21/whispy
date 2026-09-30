@@ -1,22 +1,23 @@
 """MMW-HAT radar adapter — BGT60TR13C driven by the custom spidev stack.
 
 Unlike :mod:`whispy_sensor_dreamhat` (which wraps ``ifxradarsdk``), the
-MMW-HAT ships its own Python driver — ``utility/BGT60TR13C.py`` inside an
-``MMW-HAT-Release`` tree — that bit-bangs the chip over ``spidev`` plus two
-GPIOs (reset/IRQ) and publishes complete frames on a queue.
+MMW-HAT uses its own Python driver (``BGT60TR13C``) that bit-bangs the chip
+over ``spidev`` plus two GPIOs (reset/IRQ) and publishes complete frames on
+a queue. The driver and the ``radar_config`` register/settings pairs are
+**vendored inside this package**, so ``pip install whispy-sensor-mmwhat``
+is all that is needed — detection is purely by hardware probe (chip id
+over SPI, which only succeeds on an RPi with the shield attached).
 
-The adapter locates that tree, imports the driver *in place* (so upstream
-fixes in the repo apply without a reinstall), configures the radar from a
-``radar_config`` register/settings pair, and emits one ``SensorSample`` per
-frame shaped ``[rx, chirps, samples]``::
+An external ``MMW-HAT-Release`` tree can still be used as an override —
+for development configs or an updated driver — via ``WHISPY_MMWHAT_DIR``
+or the ``release_dir``/``config_dir`` config keys::
 
     WHISPY_MMWHAT_DIR=/home/gad/Desktop/thoth/WS/MMW-HAT/MMW-HAT-Release
 
     payload = {"encoding": "radar_frame", "shape": [3, 64, 128],
                "snr_db": ..., "range_profile": [...], "xy_map": [[...]]}
 
-``discover()`` probes the chip id over SPI; it returns ``[]`` when the
-release tree, ``spidev``, or the shield itself is absent.
+``discover()`` returns ``[]`` when ``spidev`` or the shield is absent.
 """
 
 from __future__ import annotations
@@ -75,16 +76,24 @@ def _find_release_dir(explicit: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def _load_driver(release_dir: str):
-    """Import ``utility.BGT60TR13C`` from the release tree, once per path.
+def _load_driver(release_dir: Optional[str] = None):
+    """Return the ``BGT60TR13C`` driver class — vendored by default.
 
-    The driver does ``from utility.BGT60TR13C_CONST import *``; both modules
-    are loaded under a synthetic ``utility`` package so no ``sys.path``
-    mutation is needed and the release tree stays untouched.
+    When ``release_dir`` points at an MMW-HAT-Release tree, its
+    ``utility/BGT60TR13C.py`` is imported in place (the file does
+    ``from utility.BGT60TR13C_CONST import *``; both modules are loaded
+    under a synthetic ``utility`` package so no ``sys.path`` mutation is
+    needed and the tree stays untouched). Otherwise the vendored
+    ``whispy_sensor_mmwhat.driver`` is used.
     """
-    cached = _driver_cache.get(release_dir)
+    key = release_dir or "<vendored>"
+    cached = _driver_cache.get(key)
     if cached is not None:
         return cached
+    if not release_dir:
+        from .driver import BGT60TR13C  # raises ImportError w/o spidev
+        _driver_cache[key] = BGT60TR13C
+        return BGT60TR13C
     util_dir = os.path.join(release_dir, "utility")
     const_path = os.path.join(util_dir, "BGT60TR13C_CONST.py")
     drv_path = os.path.join(util_dir, "BGT60TR13C.py")
@@ -106,7 +115,7 @@ def _load_driver(release_dir: str):
         spec.loader.exec_module(mod)
 
     cls = sys.modules["utility.BGT60TR13C"].BGT60TR13C
-    _driver_cache[release_dir] = cls
+    _driver_cache[key] = cls
     return cls
 
 
@@ -119,19 +128,26 @@ def _find_one(directory: str, pattern: re.Pattern) -> str:
     return os.path.join(directory, matches[0])
 
 
-def _resolve_config_dir(release_dir: str,
+_PKG_CONFIG_BASE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "radar_config")
+
+
+def _resolve_config_dir(release_dir: Optional[str],
                         config_dir: Optional[str]) -> Optional[str]:
-    """Pick a radar_config dir containing both register + settings files."""
+    """Pick a radar_config dir containing both register + settings files.
+
+    Resolution order: explicit ``config_dir`` → the override release tree
+    (when present) → the vendored ``radar_config`` shipped in this package.
+    """
     candidates: List[str] = []
+    base = (os.path.join(release_dir, "radar_config")
+            if release_dir else _PKG_CONFIG_BASE)
     if config_dir:
         candidates.append(config_dir
                           if os.path.isabs(config_dir)
-                          else os.path.join(release_dir, "radar_config",
-                                            config_dir))
+                          else os.path.join(base, config_dir))
     else:
-        candidates.append(os.path.join(release_dir, "radar_config",
-                                       _DEFAULT_CONFIG_NAME))
-        base = os.path.join(release_dir, "radar_config")
+        candidates.append(os.path.join(base, _DEFAULT_CONFIG_NAME))
         try:
             candidates += [os.path.join(base, d) for d in sorted(
                 os.listdir(base)) if os.path.isdir(os.path.join(base, d))]
@@ -277,9 +293,7 @@ class _MmwhatHandle(SensorHandle):
             return
         release_dir = str(self._config.get("release_dir")
                           or self._desc.metadata.get("release_dir") or "")
-        if not release_dir:
-            raise RuntimeError("MMW-HAT release dir unknown")
-        cls = _load_driver(release_dir)
+        cls = _load_driver(release_dir or None)
         dev = cls(
             spi_bus=int(self._config.get("spi_bus", 0)),
             spi_dev=int(self._config.get("spi_dev", 0)),
@@ -398,9 +412,10 @@ class MmwhatRadarAdapter(SensorAdapter):
 
     def _resolve(self) -> Tuple[Optional[str], Optional[str],
                                 Optional[Dict[str, Any]]]:
+        """(release_dir, config_dir, radar cfg). release_dir may be None
+        when the vendored driver/config are used — that is the normal
+        zero-config path; an MMW-HAT-Release tree is only an override."""
         release_dir = _find_release_dir(self._release_dir)
-        if release_dir is None:
-            return None, None, None
         cfg_dir = _resolve_config_dir(release_dir, self._config_dir)
         if cfg_dir is None:
             return release_dir, None, None
@@ -411,7 +426,7 @@ class MmwhatRadarAdapter(SensorAdapter):
             return release_dir, cfg_dir, None
         return release_dir, cfg_dir, cfg
 
-    def _probe_chip(self, release_dir: str) -> bool:
+    def _probe_chip(self, release_dir: Optional[str]) -> bool:
         try:
             dev = _load_driver(release_dir)(spi_speed=10_000_000)
         except Exception as exc:
@@ -430,7 +445,7 @@ class MmwhatRadarAdapter(SensorAdapter):
 
     def discover(self) -> List[SensorDescriptor]:
         release_dir, cfg_dir, cfg = self._resolve()
-        if release_dir is None or cfg is None:
+        if cfg is None:
             return []
         if not self._probe_chip(release_dir):
             return []
@@ -444,7 +459,8 @@ class MmwhatRadarAdapter(SensorAdapter):
             config_schema=self.metadata().config_schema,
             stable=True,
             metadata={
-                "release_dir": release_dir,
+                "release_dir": release_dir or "",
+                "driver": "tree" if release_dir else "vendored",
                 "config_dir": cfg_dir,
                 "num_antennas": cfg["num_antennas"],
                 "num_chirps_per_frame": cfg["num_chirps_per_frame"],
@@ -462,14 +478,13 @@ class MmwhatRadarAdapter(SensorAdapter):
 
     def health(self) -> HealthReport:
         release_dir = _find_release_dir(self._release_dir)
-        if release_dir is None:
-            return HealthReport(status="error",
-                                detail="MMW-HAT-Release tree not found")
         try:
             _load_driver(release_dir)
         except Exception as exc:
             return HealthReport(status="error", detail=str(exc))
-        return HealthReport(status="ok")
+        return HealthReport(
+            status="ok",
+            detail="tree" if release_dir else "vendored driver")
 
     def close(self) -> None:
         for handle in self._handles:
