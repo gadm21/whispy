@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whispy-sensor-mmwhat"
-version = "0.1.0"
-description = "MMW-HAT BGT60TR13C mmWave radar adapter for Whispy (custom spidev driver)"
+version = "0.1.1"
+description = "MMW-HAT BGT60TR13C mmWave radar adapter for Whispy (vendored spidev driver, zero-config detect)"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
