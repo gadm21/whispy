@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "whispy-sensor-csi"
-version = "0.1.1"
-description = "Wi-Fi CSI sensor adapter for Whispy (ESP32 UDP streams, serial CSI_DATA, monitor-mode NICs)"
+version = "0.2.0"
+description = "Wi-Fi CSI sensor adapter for Whispy — ESP32 CSI_DATA over USB serial (auto-detected)"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["whispy>=0.1.0"]

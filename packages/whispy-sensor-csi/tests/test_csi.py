@@ -31,11 +31,10 @@ def test_configured_sources_serial_syntax(monkeypatch):
     monkeypatch.setenv("WHISPY_CSI_SOURCES",
                        "serial:/dev/ttyACM0@115200,esp=0.0.0.0:5500")
     srcs = _configured_sources()
-    serial = [s for s in srcs if s.get("type") == "serial"]
-    udp = [s for s in srcs if s.get("host")]
-    assert serial and serial[0]["serial_port"] == "/dev/ttyACM0"
-    assert serial[0]["baud"] == 115200
-    assert udp and udp[0]["id"] == "esp"
+    # only the serial source is valid — UDP syntax is ignored
+    assert len(srcs) == 1
+    assert srcs[0]["serial_port"] == "/dev/ttyACM0"
+    assert srcs[0]["baud"] == 115200
 
 
 class _FakeSerial:
@@ -43,8 +42,18 @@ class _FakeSerial:
                  chunks=()):
         self._chunks = list(chunks)
 
+    @property
+    def in_waiting(self):
+        return sum(len(c) for c in self._chunks)
+
     def read(self, n):
-        return self._chunks.pop(0) if self._chunks else b""
+        if not self._chunks:
+            return b""
+        head = self._chunks.pop(0)
+        if len(head) > n:
+            self._chunks.insert(0, head[n:])
+            return head[:n]
+        return head
 
     def close(self):
         pass
