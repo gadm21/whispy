@@ -98,7 +98,7 @@ class ModelRunner:
                 return self
             for name, handle in self.bindings.items():
                 sid = handle.info.id
-                stream = SampleStream(handle.stream(), maxlen=8192,
+                stream = SampleStream(handle.stream, maxlen=8192,
                                       name=f"{name}:{sid}")
                 stream.start()
                 self._streams[sid] = stream

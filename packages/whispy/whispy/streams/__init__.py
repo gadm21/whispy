@@ -90,15 +90,23 @@ class SampleStream:
             return self
 
         def _pump() -> None:
-            try:
-                for sample in self._source:
-                    if self._closed.is_set():
+            while not self._closed.is_set():
+                try:
+                    it = (self._source() if callable(self._source)
+                          else self._source)
+                    for sample in it:
+                        if self._closed.is_set():
+                            break
+                        self.put(sample)
+                    break            # source exhausted: stop pumping
+                except Exception:
+                    # Source failures surface via health(); ingestion must
+                    # not kill the daemon (§55). A callable source can be
+                    # retried (e.g. re-open a LAN/remote stream); a bare
+                    # iterator is dead once it raises.
+                    if not callable(self._source):
                         break
-                    self.put(sample)
-            except Exception:
-                # Source failures surface via health(); ingestion must not
-                # kill the daemon (§55).
-                pass
+                    self._closed.wait(1.0)   # backoff, then reconnect
 
         self._thread = threading.Thread(
             target=_pump, name=f"whispy-stream-{self._name or 'sensor'}",
