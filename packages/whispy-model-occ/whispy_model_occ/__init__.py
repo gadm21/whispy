@@ -144,6 +144,7 @@ class OccMoeModel(Processor):
             self.threshold = float(saved["threshold"])
             self.threshold_source = f"calibrated:{saved.get('method')}"
             self.calibration = saved
+            self.snr_scale = saved.get("snr_scale")
             return self.threshold
         self.threshold = float(self._load()["threshold"])
         self.threshold_source = "bundle"
@@ -279,8 +280,22 @@ class OccMoeModel(Processor):
         p_csi = float(np.mean(pcs))
         p_rad = float(np.mean(prs))
         w = float(m["w_csi"])
-        p = w * p_csi + (1 - w) * p_rad
-        detail.update(p=p, p_csi=p_csi, p_rad=p_rad, w_csi=w)
+        # Coverage-aware gate: the paper fits a scalar w_csi on validation,
+        # but a radar is blind outside its FOV — a low clutter-masked snr_f
+        # then means "can't see", not "empty". Scale the radar weight by
+        # coverage c = clip(snr_win / snr_scale, 0, 1) and renormalize, so
+        # radar-blind windows fall back to the CSI expert (c->0) while
+        # covered windows keep the paper's fixed mix (c=1).
+        snr_win = (float(np.nanmedian(snr_l)) if snr_l else np.nan)
+        if self.snr_scale and np.isfinite(snr_win):
+            rad_cov = float(np.clip(snr_win / self.snr_scale, 0.0, 1.0))
+        else:
+            rad_cov = 1.0          # uncalibrated: paper's fixed mix
+        w_r = (1.0 - w) * rad_cov
+        denom = max(w + w_r, 1e-9)
+        p = (w * p_csi + w_r * p_rad) / denom
+        detail.update(p=p, p_csi=p_csi, p_rad=p_rad, w_csi=w,
+                      rad_snr=snr_win, rad_cov=rad_cov)
         return p, detail
 
     def predict(self, window: SensorWindow) -> Prediction:
@@ -307,7 +322,7 @@ class OccMoeModel(Processor):
 
     # -- paper self-calibration ----------------------------------------------
     def calibrate(self, probs, method: str = "kmeans",
-                  persist: bool = True,
+                  snrs=None, persist: bool = True,
                   csi_sid: Optional[str] = None,
                   radar_sid: Optional[str] = None) -> Dict[str, Any]:
         """Unsupervised deployment calibration (paper's ``acc_km`` /
@@ -334,6 +349,15 @@ class OccMoeModel(Processor):
             "p_min": float(probs.min()), "p_max": float(probs.max()),
             "p_mean": float(probs.mean()), "ts": time.time(),
         }
+        if snrs is not None:
+            snr_arr = np.asarray(list(snrs), np.float64)
+            snr_arr = snr_arr[np.isfinite(snr_arr)]
+            if snr_arr.size >= 4:
+                # covered-FOV reference: upper quartile of window SNRs —
+                # below it the radar is increasingly blind and the gate
+                # hands weight to the CSI expert.
+                self.snr_scale = float(np.percentile(snr_arr, 75))
+                rec["snr_scale"] = self.snr_scale
         if persist:
             self._save_calibration(rec, csi_sid, radar_sid)
         self.calibration = rec
