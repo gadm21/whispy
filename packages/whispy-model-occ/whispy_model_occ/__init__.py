@@ -88,6 +88,13 @@ class OccMoeModel(Processor):
         self.threshold: Optional[float] = None
         self.threshold_source = "bundle"
         self.calibration: Dict[str, Any] = {}
+        self.snr_scale: Optional[float] = None  # radar coverage ref (calib)
+        # per-expert affine probability alignment {name: (a, b)} — fitted
+        # in calibrate() via each expert's own 2-means centroids, mapping
+        # them onto the fused centroids (fixes a systematically biased
+        # expert, e.g. a radar mounted so it reports p>=0.6 even when
+        # empty); identity (1, 0) until calibrated.
+        self.expert_cal: Dict[str, tuple] = {}
 
     # -- Processor contract --------------------------------------------------
     def metadata(self) -> ProcessorMeta:
