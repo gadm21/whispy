@@ -152,6 +152,9 @@ class OccMoeModel(Processor):
             self.threshold_source = f"calibrated:{saved.get('method')}"
             self.calibration = saved
             self.snr_scale = saved.get("snr_scale")
+            self.expert_cal = {
+                k: tuple(v) for k, v in
+                (saved.get("expert_cal") or {}).items()}
             return self.threshold
         self.threshold = float(self._load()["threshold"])
         self.threshold_source = "bundle"
@@ -331,7 +334,7 @@ class OccMoeModel(Processor):
 
     # -- paper self-calibration ----------------------------------------------
     def calibrate(self, probs, method: str = "kmeans",
-                  snrs=None, persist: bool = True,
+                  snrs=None, experts=None, persist: bool = True,
                   csi_sid: Optional[str] = None,
                   radar_sid: Optional[str] = None) -> Dict[str, Any]:
         """Unsupervised deployment calibration (paper's ``acc_km`` /
@@ -358,6 +361,40 @@ class OccMoeModel(Processor):
             "p_min": float(probs.min()), "p_max": float(probs.max()),
             "p_mean": float(probs.mean()), "ts": time.time(),
         }
+        if experts:
+            # Per-expert unsupervised alignment: run the same 2-means on
+            # each expert's probabilities, then affine-map its centroids
+            # onto the fused ones — an expert that is systematically
+            # biased (e.g. a radar reporting >=0.6 in an empty room) is
+            # re-centered before the gate mixes it.
+            if method == "kmeans" and np.unique(probs).size > 2:
+                from sklearn.cluster import KMeans
+                c_f = np.sort(KMeans(n_clusters=2, n_init=10,
+                                     random_state=SEED)
+                              .fit(probs.reshape(-1, 1))
+                              .cluster_centers_.ravel())
+                lo_f, hi_f = float(c_f[0]), float(c_f[1])
+            else:
+                lo_f, hi_f = float(probs.min()), float(probs.max())
+            ex_cal = {}
+            for name, vals in experts.items():
+                ev = np.asarray(list(vals), np.float64)
+                ev = ev[np.isfinite(ev)]
+                if ev.size < 4 or np.unique(ev).size <= 2:
+                    continue
+                from sklearn.cluster import KMeans
+                c_e = np.sort(KMeans(n_clusters=2, n_init=10,
+                                     random_state=SEED)
+                              .fit(ev.reshape(-1, 1))
+                              .cluster_centers_.ravel())
+                span_e = float(c_e[1] - c_e[0])
+                if span_e < 1e-3:          # degenerate expert, skip
+                    continue
+                a_e = (hi_f - lo_f) / span_e
+                b_e = lo_f - a_e * float(c_e[0])
+                ex_cal[name] = [float(a_e), float(b_e)]
+            self.expert_cal = {k: tuple(v) for k, v in ex_cal.items()}
+            rec["expert_cal"] = ex_cal
         if snrs is not None:
             snr_arr = np.asarray(list(snrs), np.float64)
             snr_arr = snr_arr[np.isfinite(snr_arr)]
