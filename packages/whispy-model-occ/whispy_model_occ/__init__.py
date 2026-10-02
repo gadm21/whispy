@@ -279,7 +279,9 @@ class OccMoeModel(Processor):
                for p in m["radar_models"]]
         p_csi = float(np.mean(pcs))
         p_rad = float(np.mean(prs))
-        w = float(m["w_csi"])
+        # Equal expert weighting by default (config 'w_csi' overrides);
+        # the paper's fitted w_csi=0.30 stays available via config.
+        w = float(self._config.get("w_csi", 0.5))
         # Coverage-aware gate: the paper fits a scalar w_csi on validation,
         # but a radar is blind outside its FOV — a low clutter-masked snr_f
         # then means "can't see", not "empty". Scale the radar weight by
