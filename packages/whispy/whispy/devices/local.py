@@ -414,12 +414,14 @@ class _LanSensorHandle(SensorHandle):
 
     def stream(self, max_samples: Optional[int] = None,
                poll_s: float = 0.1) -> Iterator[SensorSample]:
-        # Prime the cursor: the first tail response carries the daemon's
-        # whole ring buffer (minutes of history). A stream is live-only —
+        # Prime the cursor: ask for just the newest buffered sample so the
+        # cursor lands at the tail edge without downloading the daemon's
+        # whole ring buffer (can be tens of MB). A stream is live-only —
         # adopt the cursor and discard the backlog so consumers like
         # capture_window see only samples produced after stream start.
         body = self._http.get_json(
-            f"/api/sensors/{self._info.id}/tail", {"cursor": ""})
+            f"/api/sensors/{self._info.id}/tail",
+            {"cursor": "", "limit": 0})
         cursor = str(body.get("cursor") or "")
         count = 0
         while max_samples is None or count < max_samples:
