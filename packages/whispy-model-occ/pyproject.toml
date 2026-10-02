@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-model-occ"
+version = "0.1.0"
+description = "ICC RF-MoE occupancy model (Wi-Fi CSI + mmWave radar) with paper-style kmeans self-calibration"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "whispy>=0.1.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+]
+
+[project.entry-points."whispy.models"]
+occ-rf-moe = "whispy_model_occ:OccMoeModel"
+
+[tool.setuptools.packages.find]
+include = ["whispy_model_occ*"]
+
+[tool.setuptools.package-data]
+whispy_model_occ = ["models/*.joblib"]

@@ -259,7 +259,7 @@ def _frame_payload(arr: Any) -> Dict[str, Any]:
                            xs[j]:max(xs[j + 1], xs[j] + 1)]
                 row.append(float(block.mean()))
             xy_map.append(row)
-    return {
+    payload = {
         "encoding": "radar_frame",
         "shape": list(arr.shape),
         "snr_db": round(snr_db, 3),
@@ -267,6 +267,14 @@ def _frame_payload(arr: Any) -> Dict[str, Any]:
         "xy_map": xy_map,
         "energy": float((magnitude ** 2).mean()) if magnitude.size else 0.0,
     }
+    try:
+        # ICC-paper view maps (rd/ra/re/xy 24x24 log1p) + clutter-masked
+        # SNR — consumed by whispy-model-occ's occupancy predictor.
+        from . import dsp
+        payload.update(dsp.payload_views(arr))
+    except Exception:
+        pass
+    return payload
 
 
 class _MmwhatHandle(SensorHandle):
