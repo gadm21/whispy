@@ -27,6 +27,7 @@ import getpass
 import json
 import logging
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -95,6 +96,13 @@ class OccMoeModel(Processor):
         # expert, e.g. a radar mounted so it reports p>=0.6 even when
         # empty); identity (1, 0) until calibrated.
         self.expert_cal: Dict[str, tuple] = {}
+        # Per-expert probability history for temporal median smoothing —
+        # CSI swings ~0.1<->0.9 window-to-window (a still occupant has
+        # near-zero CSI variance), so the gate fuses the median of the
+        # last N windows rather than a single noisy frame.
+        n_hist = int(self._config.get("prob_smooth", 3))
+        self._hist = {"csi": deque(maxlen=n_hist),
+                      "radar": deque(maxlen=n_hist)}
 
     # -- Processor contract --------------------------------------------------
     def metadata(self) -> ProcessorMeta:
@@ -289,6 +297,18 @@ class OccMoeModel(Processor):
                for p in m["radar_models"]]
         p_csi = float(np.mean(pcs))
         p_rad = float(np.mean(prs))
+        # Per-expert affine de-bias (fitted in calibrate()).
+        a, b = self.expert_cal.get("csi", (1.0, 0.0))
+        p_csi = float(np.clip(a * p_csi + b, 0.0, 1.0))
+        a, b = self.expert_cal.get("radar", (1.0, 0.0))
+        p_rad = float(np.clip(a * p_rad + b, 0.0, 1.0))
+        # Temporal median smoothing over the last N windows: a single
+        # noisy RF frame (a still occupant -> CSI ~0.1) can't flip the
+        # fused probability; two consecutive low windows still can.
+        self._hist["csi"].append(p_csi)
+        self._hist["radar"].append(p_rad)
+        p_csi = float(np.median(self._hist["csi"]))
+        p_rad = float(np.median(self._hist["radar"]))
         # Equal expert weighting by default (config 'w_csi' overrides);
         # the paper's fitted w_csi=0.30 stays available via config.
         w = float(self._config.get("w_csi", 0.5))
@@ -303,11 +323,22 @@ class OccMoeModel(Processor):
             rad_cov = float(np.clip(snr_win / self.snr_scale, 0.0, 1.0))
         else:
             rad_cov = 1.0          # uncalibrated: paper's fixed mix
-        w_r = (1.0 - w) * rad_cov
-        denom = max(w + w_r, 1e-9)
-        p = (w * p_csi + w_r * p_rad) / denom
+        # Decisiveness-weighted gate: neither expert is universally
+        # reliable — CSI has blind zones, radar sees through-wall
+        # motion. Weight each by how far its probability sits from
+        # the undecided 0.5, so the confident expert leads a window
+        # while split/uncertain ones keep the base mix. Radar's
+        # weight additionally decays with FOV coverage above.
+        d_csi = abs(p_csi - 0.5) + 0.05
+        d_rad = abs(p_rad - 0.5) + 0.05
+        split = max(d_csi + d_rad, 1e-9)
+        w_c = w * (d_csi / split)
+        w_r = (1.0 - w) * rad_cov * (d_rad / split)
+        denom = max(w_c + w_r, 1e-9)
+        p = (w_c * p_csi + w_r * p_rad) / denom
         detail.update(p=p, p_csi=p_csi, p_rad=p_rad, w_csi=w,
-                      rad_snr=snr_win, rad_cov=rad_cov)
+                      rad_snr=snr_win, rad_cov=rad_cov,
+                      rad_w=w_r / denom)
         return p, detail
 
     def predict(self, window: SensorWindow) -> Prediction:
