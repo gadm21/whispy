@@ -23,6 +23,7 @@ these surface as ``wifi_scan``/``ble_scan``/``self`` payload types.
 from __future__ import annotations
 
 import base64
+import csv
 import glob
 import itertools
 import json
@@ -32,6 +33,7 @@ import time
 from typing import Any, Dict, Iterator, List, Optional
 
 from whispy.contracts import SensorDescriptor, SensorSample
+from .observations import normalize_observation
 from whispy.devices.base import SensorHandle
 from whispy.sensors.base import HealthReport, SensorAdapter, SensorMeta
 
@@ -93,13 +95,22 @@ def _probe_serial(port: str, baud: int = _DEFAULT_BAUD,
     try:
         buf = b""
         deadline = time.monotonic() + window_s
-        while time.monotonic() < deadline and len(buf) < 8192:
+        while time.monotonic() < deadline:
             chunk = ser.read(2048)
             if not chunk:
                 continue
             buf += chunk
-            if b"CSI_DATA" in buf:
-                return True
+            while b"\n" in buf:
+                line, _, buf = buf.partition(b"\n")
+                parsed = _parse_line(line)
+                if parsed and (parsed["type"] in ("csi_raw", "wifi_scan", "ble_scan", "radio_health")
+                               or (parsed["type"] == "self" and
+                                   parsed["data"].get("role") in ("rx", "sensing_rx"))):
+                    return True
+            # Bound retained noise, not the total boot bytes examined.
+            # An ESP may print more than 8 KiB before its first observation.
+            if len(buf) > 16384:
+                buf = b""
         return False
     except Exception:
         return False
@@ -123,7 +134,8 @@ def _parse_csi_payload(text: str) -> Optional[Dict[str, Any]]:
     iq_text = tail.rstrip().rstrip('"').strip()
     try:
         iq = json.loads(iq_text)
-        if not isinstance(iq, list):
+        if (not isinstance(iq, list) or not iq or len(iq) % 2
+                or any(type(v) is not int or not -128 <= v <= 127 for v in iq)):
             return None
     except Exception:
         return None
@@ -139,6 +151,19 @@ def _parse_csi_payload(text: str) -> Optional[Dict[str, Any]]:
             out["rssi"] = int(fields[3])
         except ValueError:
             pass
+    # C5/C6 and legacy ESP32 firmware have different fixed CSV layouts.
+    # Preserve the receive tick separately: the current C6 firmware writes
+    # that tick into `seq` too; it is NOT a transmitted packet counter.
+    layout = {14: (8, 9), 24: (16, 18)}.get(len(fields))
+    if layout:
+        channel_index, tick_index = layout
+        try:
+            out.update(channel=int(fields[channel_index]),
+                       firmware_timestamp_us=int(fields[tick_index]) & 0xFFFFFFFF,
+                       declared_length=int(fields[-2]),
+                       first_word_invalid=bool(int(fields[-1])))
+        except ValueError:
+            return None
     return out
 
 
@@ -163,7 +188,7 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
         return {"type": "csi_raw", "data": payload} if payload else None
 
     if text.startswith("WIFI_DATA,"):
-        parts = text.split(",")
+        parts = next(csv.reader([text]))
         if len(parts) < 7:
             return None
         try:
@@ -177,7 +202,7 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
             "rssi": rssi, "channel": ch, "ssid": ssid}}
 
     if text.startswith("BLE_DATA,"):
-        parts = text.split(",")
+        parts = next(csv.reader([text]))
         if len(parts) < 7:
             return None
         try:
@@ -194,8 +219,22 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
             "name": None if name == "-" else name,
             "mfg": None if mfg in (None, "-") else mfg}}
 
-    if text.startswith("SELF_DATA,"):
+    if text.startswith("HEALTH_DATA,"):
         parts = text.split(",")
+        if len(parts) != 5:
+            return None
+        try:
+            tick, depth, dropped, csi_enqueued = map(int, parts[1:])
+        except ValueError:
+            return None
+        if min(tick, depth, dropped, csi_enqueued) < 0:
+            return None
+        return {"type": "radio_health", "data": {
+            "ms": tick, "queue_depth": depth, "output_dropped": dropped,
+            "csi_enqueued": csi_enqueued}}
+
+    if text.startswith("SELF_DATA,"):
+        parts = next(csv.reader([text]))
         if len(parts) < 3:
             return None
         return {"type": "self", "data": {
@@ -244,13 +283,34 @@ class _SerialCsiHandle(SensorHandle):
         assert self._ser is not None
         buf = b""
         count = 0
+        errors = 0
         try:
             while True:
                 try:
                     n = self._ser.in_waiting
                     buf += self._ser.read(n or 1)
-                except Exception:
-                    return
+                    errors = 0
+                except Exception as exc:
+                    # Transient serial errors (USB suspend, host-side
+                    # reset, momentary unplug) must not end the stream —
+                    # reopen after a short backoff and keep going.
+                    errors += 1
+                    logger.warning("serial read failed on %s (%s); "
+                                   "re-opening (error #%d)",
+                                   self._desc.id, exc, errors)
+                    buf = b""
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+                    time.sleep(min(5.0, 0.5 * errors))
+                    try:
+                        self._open()
+                    except Exception as exc2:
+                        logger.warning("serial re-open failed on %s: %s",
+                                       self._desc.id, exc2)
+                        time.sleep(2.0)
+                    continue
                 while b"\n" in buf:
                     line, _, buf = buf.partition(b"\n")
                     parsed = _parse_line(line)
@@ -274,16 +334,25 @@ class _SerialCsiHandle(SensorHandle):
                     else:
                         # radio-scan metadata (wifi_scan/ble_scan/self)
                         payload = {"source": "serial", **data}
+                    received_at = time.time()
+                    observation = normalize_observation(
+                        ptype, payload, {**self._desc.metadata, **self._config},
+                        component_id=self._desc.hardware_id,
+                        received_at=received_at,
+                    )
+                    payload["observation"] = observation
                     yield SensorSample(
                         device_id="",
                         sensor_id=self._desc.id,
-                        sensor_type="wifi_csi",
-                        timestamp=time.time(),
+                        sensor_type=observation["sensor_type"],
+                        timestamp=received_at,
                         sequence=next(self._seq),
                         payload_type=ptype,
                         payload=payload,
                         metadata={"adapter": "csi",
-                                  "hardware_id": self._desc.hardware_id},
+                                  "hardware_id": self._desc.hardware_id,
+                                  "component_id": observation["component_id"],
+                                  "stream": observation["stream"]},
                     )
                     count += 1
                     if max_samples is not None and count >= max_samples:
@@ -315,8 +384,8 @@ class CsiSensorAdapter(SensorAdapter):
     def metadata(self) -> SensorMeta:
         return SensorMeta(
             name="esp32_csi",
-            version="0.2.0",
-            modalities=("wifi_csi",),
+            version="0.3.0",
+            modalities=("wifi_csi", "radio.wifi_rssi", "radio.ble_rssi", "radio.self", "radio.health"),
             description="ESP32 CSI receiver on USB serial "
                         "(CSI_DATA lines, esp32-csi-tool)",
             config_schema={
@@ -324,6 +393,11 @@ class CsiSensorAdapter(SensorAdapter):
                 "properties": {
                     "serial_port": {"type": "string"},
                     "baud": {"type": "integer"},
+                    "node_id": {"type": "string"},
+                    "component_id": {"type": "string"},
+                    "direct_source_mac": {"type": "string"},
+                    "direct_source_component": {"type": "string"},
+                    "ap_bssid": {"type": "string"},
                 },
             },
             maintainer="thothcraft",
@@ -358,6 +432,10 @@ class CsiSensorAdapter(SensorAdapter):
                 metadata={
                     "serial_port": src.get("serial_port"),
                     "baud": src.get("baud"),
+                    **{key: src[key] for key in (
+                        "node_id", "component_id", "direct_source_mac",
+                        "direct_source_component", "ap_bssid",
+                    ) if key in src},
                 },
             ))
         return out
