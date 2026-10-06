@@ -3,7 +3,7 @@ import base64
 
 from whispy.conformance import check_sensor_adapter
 from whispy_sensor_csi import (
-    CsiSensorAdapter, _configured_sources, _parse_csi_line,
+    CsiSensorAdapter, _configured_sources, _parse_line,
 )
 
 LINE = (b'CSI_DATA,227064187,1a:00:00:00:00:00,-73,11,-99,223,69,6,'
@@ -12,8 +12,10 @@ LINE = (b'CSI_DATA,227064187,1a:00:00:00:00:00,-73,11,-99,223,69,6,'
 
 
 def test_parse_csi_line():
-    out = _parse_csi_line(LINE)
+    out = _parse_line(LINE)
     assert out is not None
+    assert out["type"] == "csi_raw"
+    out = out["data"]
     assert out["seq"] == 227064187
     assert out["mac"] == "1a:00:00:00:00:00"
     assert out["rssi"] == -73
@@ -22,9 +24,36 @@ def test_parse_csi_line():
 
 
 def test_parse_csi_line_rejects_non_csi():
-    assert _parse_csi_line(b"hello") is None
-    assert _parse_csi_line(b"CSI_DATA,1,2") is None      # no quoted array
-    assert _parse_csi_line(b"") is None
+    assert _parse_line(b"hello") is None
+    assert _parse_line(b"CSI_DATA,1,2") is None      # no quoted array
+    assert _parse_line(b"") is None
+
+
+def test_parse_wifi_scan_line():
+    out = _parse_line(
+        b'WIFI_DATA,12345,aa:bb:cc:dd:ee:ff,bcn,-62,6,"MyHome"')
+    assert out == {"type": "wifi_scan", "data": {
+        "ms": "12345", "mac": "aa:bb:cc:dd:ee:ff", "kind": "bcn",
+        "rssi": -62, "channel": 6, "ssid": "MyHome"}}
+
+
+def test_parse_ble_scan_line():
+    out = _parse_line(
+        b'BLE_DATA,999,11:22:33:44:55:66,1,-71,127,"thoth-csi-tx","ffff6761"')
+    assert out["type"] == "ble_scan"
+    d = out["data"]
+    assert d["addr"] == "11:22:33:44:55:66"
+    assert d["rssi"] == -71
+    assert d["tx_power"] is None          # 127 = absent
+    assert d["name"] == "thoth-csi-tx"
+
+
+def test_parse_self_line():
+    out = _parse_line(
+        b'SELF_DATA,rx,80:65:99:aa:bb:cc,"thoth-csi-rx","gad21"')
+    assert out == {"type": "self", "data": {
+        "role": "rx", "mac": "80:65:99:aa:bb:cc",
+        "name": "thoth-csi-rx", "owner": "gad21"}}
 
 
 def test_configured_sources_serial_syntax(monkeypatch):
@@ -93,6 +122,23 @@ def test_serial_handle_streams(monkeypatch):
     assert s.payload["n_subcarriers"] == 7
     raw = base64.b64decode(s.payload["data"])
     assert len(raw) == 14
+    adapter.close()
+
+
+def test_serial_handle_streams_scan_lines(monkeypatch):
+    """Scan-extension lines surface as their own payload types."""
+    import whispy_sensor_csi as mod
+    blob = (b'WIFI_DATA,1,aa:bb:cc:dd:ee:ff,bcn,-62,6,"Home"\n'
+            b'BLE_DATA,2,11:22:33:44:55:66,1,-71,127,"-","-"\n' +
+            LINE + b"\n")
+    monkeypatch.setattr(mod, "_serial_module",
+                        lambda: _fake_serial_factory([blob]))
+    adapter = _serial_adapter()
+    desc = [d for d in adapter.discover()
+            if d.metadata.get("serial_port")][0]
+    handle = adapter.connect(desc)
+    types = [s.payload_type for s in handle.stream(max_samples=3)]
+    assert types == ["wifi_scan", "ble_scan", "csi_raw"]
     adapter.close()
 
 

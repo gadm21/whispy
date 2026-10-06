@@ -13,6 +13,11 @@ serial protocol — the ESP32 plugged into the node is the receiver.
 Samples carry the decoded CSI frame (``encoding csi_raw``): the raw int8
 I/Q pairs base64'd in ``data`` (dashboard amp/variance views work) plus
 parsed ``iq`` (list), ``rssi``, ``mac``, ``seq``, ``n_subcarriers``.
+
+Firmware with the thoth scan extension additionally emits ``WIFI_DATA``
+(promiscuous 802.11 frames: mac/kind/rssi/channel/ssid), ``BLE_DATA``
+(advertiser addr/rssi/name/mfg) and ``SELF_DATA`` (device identity) lines;
+these surface as ``wifi_scan``/``ble_scan``/``self`` payload types.
 """
 
 from __future__ import annotations
@@ -105,18 +110,13 @@ def _probe_serial(port: str, baud: int = _DEFAULT_BAUD,
             pass
 
 
-def _parse_csi_line(line: bytes) -> Optional[Dict[str, Any]]:
-    """Parse one ``CSI_DATA`` CSV line (esp32-csi-tool).
+def _unquote(field: str) -> str:
+    return field.strip().strip('"').strip()
 
-    Layout is firmware-dependent; only the stable fields are pulled by
-    position: seq, mac, rssi — and the trailing quoted ``[i,q,...]`` array.
-    """
-    try:
-        text = line.decode("ascii", errors="ignore").strip()
-    except Exception:
-        return None
-    if not text.startswith("CSI_DATA,"):
-        return None
+
+def _parse_csi_payload(text: str) -> Optional[Dict[str, Any]]:
+    """Parse the body of a ``CSI_DATA`` line: stable positional fields
+    (seq, mac, rssi) + trailing quoted ``[i,q,...]`` array."""
     head, sep, tail = text.partition(',"')
     if not sep or not tail.rstrip().endswith('"'):
         return None
@@ -140,6 +140,70 @@ def _parse_csi_line(line: bytes) -> Optional[Dict[str, Any]]:
         except ValueError:
             pass
     return out
+
+
+def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
+    """Parse one serial line from the CSI firmware.
+
+    Returns ``{"type": <payload_type>, "data": {...}}`` or ``None``.
+    Firmware (esp32-csi-tool + thoth scan extension) emits:
+
+    - ``CSI_DATA,seq,mac,rssi,...,"[i,q,...]"``
+    - ``WIFI_DATA,ms,mac,kind,rssi,ch,"ssid"``   promiscuous 802.11 frames
+    - ``BLE_DATA,ms,addr,addr_type,rssi,txp,"name","mfg_hex"``
+    - ``SELF_DATA,role,mac,"name","owner"``
+    """
+    try:
+        text = line.decode("ascii", errors="ignore").strip()
+    except Exception:
+        return None
+
+    if text.startswith("CSI_DATA,"):
+        payload = _parse_csi_payload(text)
+        return {"type": "csi_raw", "data": payload} if payload else None
+
+    if text.startswith("WIFI_DATA,"):
+        parts = text.split(",")
+        if len(parts) < 7:
+            return None
+        try:
+            rssi = int(parts[4])
+            ch = int(parts[5])
+        except ValueError:
+            return None
+        ssid = _unquote(",".join(parts[6:])) or None
+        return {"type": "wifi_scan", "data": {
+            "ms": parts[1], "mac": parts[2], "kind": parts[3],
+            "rssi": rssi, "channel": ch, "ssid": ssid}}
+
+    if text.startswith("BLE_DATA,"):
+        parts = text.split(",")
+        if len(parts) < 7:
+            return None
+        try:
+            addr_type = int(parts[3])
+            rssi = int(parts[4])
+            txp = int(parts[5])
+        except ValueError:
+            return None
+        name = _unquote(parts[6]) or None
+        mfg = _unquote(parts[7]) if len(parts) > 7 else None
+        return {"type": "ble_scan", "data": {
+            "ms": parts[1], "addr": parts[2], "addr_type": addr_type,
+            "rssi": rssi, "tx_power": None if txp == 127 else txp,
+            "name": None if name == "-" else name,
+            "mfg": None if mfg in (None, "-") else mfg}}
+
+    if text.startswith("SELF_DATA,"):
+        parts = text.split(",")
+        if len(parts) < 3:
+            return None
+        return {"type": "self", "data": {
+            "role": parts[1], "mac": parts[2],
+            "name": _unquote(parts[3]) if len(parts) > 3 else None,
+            "owner": _unquote(parts[4]) if len(parts) > 4 else None}}
+
+    return None
 
 
 class _SerialCsiHandle(SensorHandle):
@@ -189,20 +253,15 @@ class _SerialCsiHandle(SensorHandle):
                     return
                 while b"\n" in buf:
                     line, _, buf = buf.partition(b"\n")
-                    parsed = _parse_csi_line(line)
+                    parsed = _parse_line(line)
                     if parsed is None:
                         continue
-                    iq = parsed.pop("iq")
-                    iq_bytes = bytes(
-                        (v & 0xFF) for v in iq)  # int8 pairs as bytes
-                    yield SensorSample(
-                        device_id="",
-                        sensor_id=self._desc.id,
-                        sensor_type="wifi_csi",
-                        timestamp=time.time(),
-                        sequence=next(self._seq),
-                        payload_type="csi_raw",
-                        payload={
+                    ptype, data = parsed["type"], parsed["data"]
+                    if ptype == "csi_raw":
+                        iq = data.pop("iq")
+                        iq_bytes = bytes(
+                            (v & 0xFF) for v in iq)  # int8 pairs
+                        payload = {
                             "encoding": "csi_raw",
                             "data": base64.b64encode(iq_bytes)
                                     .decode("ascii"),
@@ -210,8 +269,19 @@ class _SerialCsiHandle(SensorHandle):
                             "n_subcarriers": len(iq) // 2,
                             "iq": iq,
                             "source": "serial",
-                            **parsed,
-                        },
+                            **data,
+                        }
+                    else:
+                        # radio-scan metadata (wifi_scan/ble_scan/self)
+                        payload = {"source": "serial", **data}
+                    yield SensorSample(
+                        device_id="",
+                        sensor_id=self._desc.id,
+                        sensor_type="wifi_csi",
+                        timestamp=time.time(),
+                        sequence=next(self._seq),
+                        payload_type=ptype,
+                        payload=payload,
                         metadata={"adapter": "csi",
                                   "hardware_id": self._desc.hardware_id},
                     )
