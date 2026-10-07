@@ -78,6 +78,7 @@ from .processors import (
     TorchScriptProcessor,
     create_processor,
 )
+from .beacons import decode_beacon
 from .actuators import (
     Actuator,
     ActuatorAdapter,
@@ -130,6 +131,8 @@ __all__ = [
     "SensorAdapter", "ObservationAdapter", "ContextAdapter",
     "SensorDriver", "SensorDriverAdapter", "SensorMeta",
     "HealthReport", "FixtureDriver",
+    # beacons
+    "decode_beacon",
     # streams/windows
     "SampleStream", "WindowSynchronizer", "WindowFeatures",
     # processors / models

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whispy-sensor-zigbee"
+version = "0.1.0"
+description = "Zigbee environment sensor for Whispy — serial coordinator frames + Home Assistant entity backend"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["whispy>=0.1.0"]
+
+[project.entry-points."whispy.sensors"]
+zigbee = "whispy_sensor_zigbee:ZigbeeSensorAdapter"
+
+[tool.setuptools.packages.find]
+include = ["whispy_sensor_zigbee*"]

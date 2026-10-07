@@ -32,6 +32,7 @@ import os
 import time
 from typing import Any, Dict, Iterator, List, Optional
 
+from whispy.beacons import decode_beacon
 from whispy.contracts import SensorDescriptor, SensorSample
 from .observations import normalize_observation
 from whispy.devices.base import SensorHandle
@@ -334,6 +335,10 @@ class _SerialCsiHandle(SensorHandle):
                     else:
                         # radio-scan metadata (wifi_scan/ble_scan/self)
                         payload = {"source": "serial", **data}
+                        if ptype == "ble_scan":
+                            beacon = decode_beacon(data)
+                            if beacon is not None:
+                                payload["beacon"] = beacon
                     received_at = time.time()
                     observation = normalize_observation(
                         ptype, payload, {**self._desc.metadata, **self._config},

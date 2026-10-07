@@ -33,7 +33,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from whispy import (SensorAdapter, SensorDescriptor, SensorHandle,
-                    SensorSample)
+                    SensorSample, decode_beacon)
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +230,9 @@ def ble_scan(seconds: float) -> List[Dict[str, Any]]:
                 for cid, blob in adv.manufacturer_data.items():
                     mfg = f"{cid:04x}" + blob.hex()
                     break
+            service_data = {
+                str(u).lower(): bytes(b).hex()
+                for u, b in (adv.service_data or {}).items()}
             seen[device.address.lower()] = {
                 "addr": device.address.lower(),
                 "addr_type": 0,
@@ -237,6 +240,9 @@ def ble_scan(seconds: float) -> List[Dict[str, Any]]:
                 "tx_power": adv.tx_power,
                 "name": adv.local_name or device.name,
                 "mfg": mfg,
+                "service_data": service_data or None,
+                "service_uuids": [str(u).lower()
+                                  for u in (adv.service_uuids or [])] or None,
             }
         scanner = bleak.BleakScanner(detection_callback=_cb)
         try:
@@ -335,6 +341,9 @@ class _RadioHandle(SensorHandle):
                 next_wifi = now + self._wifi_period
             if now >= next_ble:
                 for dev in ble_scan(self._ble_window):
+                    beacon = decode_beacon(dev)
+                    if beacon is not None:
+                        dev = {**dev, "beacon": beacon}
                     yield _emit(self._sample("ble_scan", dev))
                     if max_samples is not None and count >= max_samples:
                         return
