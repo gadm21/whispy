@@ -201,6 +201,19 @@ class Client:
         """Entities + relationships + live states in one document."""
         return self._http.request("GET", "/v1/context/snapshot")
 
+    def context_map(self) -> Dict[str, Any]:
+        """Stable semantic map — persons/places/devices/activities/objects,
+        active relationships + states, builder status (``GET /v1/context/map``)."""
+        return self._http.request("GET", "/v1/context/map")
+
+    def context_rebuild(self, window_s: float = 900.0,
+                        dry_run: bool = False) -> Dict[str, Any]:
+        """Run one LLM context-builder pass now over the last ``window_s``
+        of descriptor evidence (``POST /v1/context/rebuild``)."""
+        return self._http.request("POST", "/v1/context/rebuild",
+                                  body={"window_s": window_s,
+                                        "dry_run": dry_run})
+
     def context_events(self, key: Optional[str] = None,
                        since: Optional[float] = None,
                        limit: int = 200) -> List[Dict[str, Any]]:
