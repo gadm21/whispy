@@ -18,10 +18,13 @@ def _mac(value: Any) -> str | None:
 def normalize_observation(payload_type: str, payload: Mapping[str, Any],
                           config: Mapping[str, Any], *, component_id: str,
                           received_at: float) -> dict[str, Any]:
-    source = _mac(payload.get("mac") or payload.get("addr"))
+    source = _mac(payload.get("mac") or payload.get("addr")
+                  or payload.get("src"))
     sensor_type, stream, radio, measurement = {
         "wifi_scan": ("radio.wifi_rssi", "wifi_rssi/v1", "wifi", "rssi"),
         "ble_scan": ("radio.ble_rssi", "ble_rssi/v1", "ble", "rssi"),
+        "zigbee_scan": ("radio.zigbee_frame", "zigbee_frame/v1",
+                        "zigbee", "frame"),
         "self": ("radio.self", "radio_self/v1", None, "identity"),
         "radio_health": ("radio.health", "radio_health/v1", None, "health"),
         "csi_raw": ("wifi_csi", "wifi_csi_unclassified/v1", "wifi", "csi"),
@@ -46,7 +49,8 @@ def normalize_observation(payload_type: str, payload: Mapping[str, Any],
             issues.append("csi_length_mismatch")
     tick = payload.get("firmware_timestamp_us")
     tick_unit = "us" if tick is not None else None
-    if payload_type in ("wifi_scan", "ble_scan", "radio_health"):
+    if payload_type in ("wifi_scan", "ble_scan", "zigbee_scan",
+                        "radio_health"):
         try:
             tick, tick_unit = int(payload["ms"]), "ms"
         except (KeyError, ValueError, TypeError):

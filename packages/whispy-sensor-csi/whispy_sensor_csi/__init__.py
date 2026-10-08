@@ -104,9 +104,11 @@ def _probe_serial(port: str, baud: int = _DEFAULT_BAUD,
             while b"\n" in buf:
                 line, _, buf = buf.partition(b"\n")
                 parsed = _parse_line(line)
-                if parsed and (parsed["type"] in ("csi_raw", "wifi_scan", "ble_scan", "radio_health")
+                if parsed and (parsed["type"] in ("csi_raw", "wifi_scan",
+                               "ble_scan", "zigbee_scan", "radio_health")
                                or (parsed["type"] == "self" and
-                                   parsed["data"].get("role") in ("rx", "sensing_rx"))):
+                                   parsed["data"].get("role") in
+                                   ("rx", "sensing_rx", "zb"))):
                     return True
             # Bound retained noise, not the total boot bytes examined.
             # An ESP may print more than 8 KiB before its first observation.
@@ -233,6 +235,33 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
         return {"type": "radio_health", "data": {
             "ms": tick, "queue_depth": depth, "output_dropped": dropped,
             "csi_enqueued": csi_enqueued}}
+
+    if text.startswith("ZB_DATA,"):
+        # ZB_DATA,ms,ch,type,seq,src,dst_pan,dst,rssi,lqi,plen,payload_hex
+        parts = text.split(",")
+        if len(parts) < 11:
+            return None
+        try:
+            return {"type": "zigbee_scan", "data": {
+                "ms": int(parts[1]), "channel": int(parts[2]),
+                "kind": parts[3], "seq": int(parts[4]),
+                "src": parts[5], "dst_pan": parts[6], "dst": parts[7],
+                "rssi": int(parts[8]), "lqi": int(parts[9]),
+                "plen": int(parts[10]), "payload_hex": parts[11],
+            }}
+        except ValueError:
+            return None
+
+    if text.startswith("ZB_INFO,"):
+        # ZB_INFO,key=value,... — zb-role status banner
+        info = {}
+        for kv in text[len("ZB_INFO,"):].split(","):
+            k, _, v = kv.partition("=")
+            if v:
+                info[k] = v
+        return {"type": "radio_health", "data": {
+            "ms": 0, "queue_depth": 0, "output_dropped": 0,
+            "csi_enqueued": 0, "zb_info": info}}
 
     if text.startswith("SELF_DATA,"):
         parts = next(csv.reader([text]))
@@ -389,8 +418,9 @@ class CsiSensorAdapter(SensorAdapter):
     def metadata(self) -> SensorMeta:
         return SensorMeta(
             name="esp32_csi",
-            version="0.3.0",
-            modalities=("wifi_csi", "radio.wifi_rssi", "radio.ble_rssi", "radio.self", "radio.health"),
+            version="0.4.0",
+            modalities=("wifi_csi", "radio.wifi_rssi", "radio.ble_rssi",
+                        "radio.zigbee_frame", "radio.self", "radio.health"),
             description="ESP32 CSI receiver on USB serial "
                         "(CSI_DATA lines, esp32-csi-tool)",
             config_schema={
