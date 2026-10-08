@@ -86,10 +86,54 @@ class WhisperSttModel(Processor):
             },
         )
 
+    @staticmethod
+    def _free_memory_mb() -> Optional[float]:
+        """Available physical RAM in MiB (None when unknown)."""
+        try:
+            import psutil  # type: ignore
+            return psutil.virtual_memory().available / 1048576.0
+        except Exception:
+            pass
+        try:  # Windows fallback without psutil
+            import ctypes
+
+            class _MEMSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            st = _MEMSTATUSEX()
+            st.dwLength = ctypes.sizeof(st)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                    ctypes.byref(st)):  # type: ignore[attr-defined]
+                return st.ullAvailPhys / 1048576.0
+        except Exception:
+            pass
+        return None
+
     def _load(self) -> bool:
         if self._model is not None:
             return True
         if self._backend == "faster":
+            free_mb = self._free_memory_mb()
+            # ctranslate2's model load does not tolerate allocation
+            # failure — under memory pressure it hard-crashes the host
+            # process (access violation, uncatchable). Refuse to load
+            # when the box is starved so the daemon survives.
+            if free_mb is not None and free_mb < 768.0:
+                self._load_error = (
+                    f"insufficient free memory for whisper load "
+                    f"({free_mb:.0f} MiB < 768 MiB)")
+                logger.warning("whisper-stt: %s", self._load_error)
+                return False
             try:
                 from faster_whisper import WhisperModel  # type: ignore
                 self._model = WhisperModel(
