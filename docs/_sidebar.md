@@ -13,7 +13,11 @@
   - [Overview](thoth/README.md)
   - [CLI](thoth/cli.md)
   - [Daemon](thoth/daemon.md)
+  - [Observation contract](thoth/observation-contract-v1.md)
+  - [Bluetooth architecture](thoth/bluetooth-architecture.md)
+  - [Platform rollout](thoth/platform-rollout.md)
 - **Brain**
   - [v1 API](brain/README.md)
 - **Portal**
   - [thothHUB](hub.md)
+  - [Authentication](portal/AUTHENTICATION.md)

@@ -1,0 +1,62 @@
+name: docs-sync
+
+# Mirrors <repo>/docs/**.md from each source repo into this repo's docsify
+# site (docs/<section>/). Fires when a source repo dispatches 'docs-updated',
+# nightly as a safety net, and on demand.
+
+on:
+  repository_dispatch:
+    types: [docs-updated]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # DOCS_SYNC_TOKEN: PAT (repo scope) able to read the private source repos.
+      - uses: actions/checkout@v4
+        with:
+          repository: Thothcraft/thoth
+          path: .docs-src/thoth
+          sparse-checkout: docs
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Thothcraft/Brain
+          path: .docs-src/Brain
+          sparse-checkout: docs
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Thothcraft/ResearchPortal
+          path: .docs-src/ResearchPortal
+          sparse-checkout: docs
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+
+      - name: Sync docs
+        run: |
+          python tools/sync_docs.py \
+            --source thoth=.docs-src/thoth/docs \
+            --source brain=.docs-src/Brain/docs \
+            --source portal=.docs-src/ResearchPortal/docs
+
+      - name: Commit changes
+        run: |
+          git config user.name "docs-bot"
+          git config user.email "docs-bot@thothcraft.com"
+          git add docs
+          if git diff --cached --quiet; then
+            echo "no doc changes"
+          else
+            git commit -m "docs: sync from source repos"
+            git push
+          fi

@@ -6,12 +6,14 @@ files are rendered client-side. Deploy the folder as-is.
 
 ## Vercel
 
-1. Import the `whispy` repo (or a dedicated docs repo containing this
-   folder).
-2. Set **Root Directory** to `docs`.
-3. Framework preset: **Other**. Build command: *none*. Output directory:
-   *leave empty* (the folder is served directly).
-4. Add the domain **`docs.thothcraft.com`** to the project.
+`thothcraft.com` DNS is hosted on Vercel, so the `docs` record is created
+automatically once the domain is attached — no manual DNS.
+
+1. **New Project** → import `gadm21/whispy`.
+2. Set **Root Directory** to `docs`. `vercel.json` in this folder pins
+   framework `null` + output `.` — leave build/install commands empty.
+3. **Deploy**, then **Settings → Domains** → add **`docs.thothcraft.com`**.
+   Vercel provisions the cert and the DNS record.
 
 Because routing is client-side (`#/path`), no rewrites are needed.
 
