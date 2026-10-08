@@ -107,12 +107,16 @@ from .plugins import PluginInfo, PluginRegistry
 from .streams import SampleStream
 from .synchronization import WindowSynchronizer
 from .windows import WindowFeatures
+from .descriptors import window_descriptors
+from .textual import TextualDescriber
+from .snapshot import snapshot
 
 __version__ = "0.1.0"
 
 __all__ = [
     # entry points
     "local", "lan", "Client", "model", "models", "capture_window",
+    "snapshot", "window_descriptors", "TextualDescriber",
     # contracts
     "Action", "ActionRequest", "ActionResult", "ActionStatus",
     "ActuatorCommand", "ActuatorDescriptor", "Capture",

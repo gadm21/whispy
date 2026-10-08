@@ -206,6 +206,29 @@ class Client:
         active relationships + states, builder status (``GET /v1/context/map``)."""
         return self._http.request("GET", "/v1/context/map")
 
+    def scenes(self, device_id: Optional[str] = None,
+               limit: int = 20) -> List[Dict[str, Any]]:
+        """Latest node uplinks (``context.descriptors.v1``), newest first.
+
+        Each item: ``{device_id, timestamp, scene, predictions, sensors}``
+        where ``sensors[id]`` has ``type``, ``text``, ``cues`` and the
+        physical ``fields`` — what the context builder reads."""
+        payload = self._http.request(
+            "GET", "/v1/context/evidence",
+            params={"key": "context.descriptors.v1", "limit": limit})
+        out = []
+        for ev in payload.get("evidence") or []:
+            if device_id and ev.get("device_id") != device_id:
+                continue
+            body = ev.get("value") or {}
+            v = body.get("value") if isinstance(body.get("value"), dict) else body
+            out.append({"device_id": ev.get("device_id"),
+                        "timestamp": ev.get("timestamp"),
+                        "scene": v.get("scene"),
+                        "predictions": v.get("predictions") or {},
+                        "sensors": v.get("sensors") or {}})
+        return out
+
     def context_rebuild(self, window_s: float = 900.0,
                         dry_run: bool = False) -> Dict[str, Any]:
         """Run one LLM context-builder pass now over the last ``window_s``
