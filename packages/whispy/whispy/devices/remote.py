@@ -47,7 +47,12 @@ class _Http:
                 url += "?" + qs
         headers = {"Accept": "application/json"}
         if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+            # Scoped automation keys (tc_/wk_ prefix) authenticate via
+            # X-Api-Key on Brain; JWTs use Bearer.
+            if self.token.startswith(("tc_", "wk_")):
+                headers["X-Api-Key"] = self.token
+            else:
+                headers["Authorization"] = f"Bearer {self.token}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"
