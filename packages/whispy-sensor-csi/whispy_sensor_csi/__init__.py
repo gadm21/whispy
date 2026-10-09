@@ -272,6 +272,19 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
             "name": _unquote(parts[3]) if len(parts) > 3 else None,
             "owner": _unquote(parts[4]) if len(parts) > 4 else None}}
 
+    if text.startswith("NET_DATA,"):
+        # NET_DATA,ip,hostname,port,channel — board joined an AP
+        parts = text.split(",")
+        if len(parts) < 4:
+            return None
+        try:
+            return {"type": "net", "data": {
+                "ip": parts[1], "hostname": parts[2],
+                "port": int(parts[3]),
+                "channel": int(parts[4]) if len(parts) > 4 else None}}
+        except ValueError:
+            return None
+
     return None
 
 

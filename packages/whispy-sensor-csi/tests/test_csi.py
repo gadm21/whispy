@@ -56,6 +56,14 @@ def test_parse_self_line():
         "name": "thoth-csi-rx", "owner": "gad21"}}
 
 
+def test_parse_net_line():
+    out = _parse_line(b"NET_DATA,10.0.0.57,thoth-esp32-bbcc.local,5000,6")
+    assert out == {"type": "net", "data": {
+        "ip": "10.0.0.57", "hostname": "thoth-esp32-bbcc.local",
+        "port": 5000, "channel": 6}}
+    assert _parse_line(b"NET_DATA,10.0.0.57,h,notaport") is None
+
+
 def test_configured_sources_serial_syntax(monkeypatch):
     monkeypatch.setenv("WHISPY_CSI_SOURCES",
                        "serial:/dev/ttyACM0@115200,esp=0.0.0.0:5500")
