@@ -2,6 +2,11 @@
   - [Introduction](guide/README.md)
   - [Architecture](guide/architecture.md)
   - [Quickstart](guide/quickstart.md)
+- **Hardware**
+  - [Overview](hardware/README.md)
+  - [Thoth One (RPi 5 + radar)](hardware/thoth-one.md)
+  - [ESP32-C6 CSI firmware](hardware/esp32.md)
+  - [PineTime firmware](hardware/pinetime.md)
 - **Whispy SDK**
   - [Overview](whispy/README.md)
   - [Sensors](whispy/sensors.md)
@@ -18,6 +23,7 @@
   - [Platform rollout](thoth/platform-rollout.md)
 - **Brain**
   - [v1 API](brain/README.md)
+  - [LLM context inference](brain/context-infer.md)
 - **Portal**
   - [thothHUB](hub.md)
   - [Authentication](portal/AUTHENTICATION.md)
