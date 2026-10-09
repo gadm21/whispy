@@ -24,6 +24,7 @@
 - **Brain**
   - [v1 API](brain/README.md)
   - [LLM context inference](brain/context-infer.md)
+  - [LLM prompts & responses](brain/llm-prompts.md)
 - **Portal**
   - [thothHUB](hub.md)
   - [Authentication](portal/AUTHENTICATION.md)

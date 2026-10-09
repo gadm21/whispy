@@ -77,6 +77,23 @@ A deployment pushes a model to a node. The node validates, installs, and
 activates the processor, then acknowledges with a stable
 `runtime_model_id`.
 
+### Context
+
+```
+GET  /v1/context/map            # the semantic map (entities + relationships + states)
+GET  /v1/context/evidence       # evidence rows, filter by key/device
+POST /v1/context/rebuild        # rolling LLM rebuild of the map (context:write)
+POST /v1/context/infer          # classify one window into a context form (context:write)
+GET/PUT /v1/nodes/{id}/room     # room/v1 layout doc (cache-through to the node)
+GET  /v1/events                 # context change events
+```
+
+The context layer is maintained by three LLM call sites — the rolling map
+builder, the per-window estimator, and the chat agent. [LLM context
+inference](brain/context-infer.md) documents `infer`; [LLM prompts &
+responses](brain/llm-prompts.md) shows the complete real prompts and model
+responses for all three, captured against production.
+
 ## Consuming the API
 
 Use the Whispy `Client` rather than hand-rolling requests:
