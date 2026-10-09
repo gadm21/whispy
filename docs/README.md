@@ -1,16 +1,10 @@
-# Thothcraft Docs
+﻿# Thothcraft Docs
 
-**Programmable sensing** — Whispy SDK · Thoth edge nodes · Brain cloud · thothHUB.
+**This documentation is published at https://docs.thothcraft.com — start there.**
 
-Thothcraft turns any machine into a local-first sensor that can see, reason,
-and act on its environment.
-
-<div class="hero-actions">
-  <a href="#/guide/quickstart" class="btn brand">Get started</a>
-  <a href="#/guide/architecture" class="btn">Architecture</a>
-</div>
-
-## The platform
+Rendered with docsify (`index.html` entry point). The homepage source is
+`home.md` — the site root `README.md` is intentionally not served by Vercel,
+so the docsify `homepage` setting points at `home.md` instead.
 
 | Piece | What it is |
 |---|---|
@@ -19,10 +13,5 @@ and act on its environment.
 | **[Brain](brain/README.md)** | The cloud control + data plane — a versioned `/v1` API. |
 | **[thothHUB](hub.md)** | The web portal for devices, models, captures, and fleet. |
 
-## Start here
-
-- [Introduction](guide/README.md) — the mental model and the four pieces.
-- [Quickstart](guide/quickstart.md) — install and run your first sensor.
-- [Architecture](guide/architecture.md) — how it all fits together.
-- [Whispy SDK](whispy/README.md) — the programmable sensing API.
-- [Brain v1 API](brain/README.md) — the cloud control plane.
+Edit markdown files here and push to `main` — the site redeploys
+automatically. See `DEPLOY.md`.
