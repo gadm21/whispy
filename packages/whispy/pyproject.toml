@@ -14,14 +14,14 @@ dependencies = []
 [project.optional-dependencies]
 sensors = [
     "psutil>=5.9",
-    "opencv-python>=4.8",
+    "opencv-python>=4.8,<5",  # cv2 5.x removed CascadeClassifier (face model)
     "pyserial>=3.5",
     "sense-hat>=2.6; platform_system=='Linux'",
 ]
 dl = ["torch>=2.0", "numpy>=1.24"]
 all = [
     "psutil>=5.9",
-    "opencv-python>=4.8",
+    "opencv-python>=4.8,<5",
     "pyserial>=3.5",
     "torch>=2.0",
     "numpy>=1.24",
