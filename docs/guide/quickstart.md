@@ -20,7 +20,7 @@ curl -fsSL https://get.thothcraft.com/install.sh | bash
 **Windows (PowerShell)**
 
 ```powershell
-irm https://get.thothcraft.com/install.ps1 | iex
+& ([scriptblock]::Create((irm https://get.thothcraft.com/install.ps1)))
 ```
 
 The installer installs the `whispy` SDK and the `thoth` node app, then
