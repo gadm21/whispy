@@ -108,6 +108,33 @@ class _CameraHandle(SensorHandle):
         self._cap = cap
 
     def stream(self, max_samples: Optional[int] = None) -> Iterator[SensorSample]:
+        # Duty cycling (idle_s > 0): the camera opens for burst_s, then
+        # releases — the privacy LED is ON only during bursts and off for
+        # the whole idle window, so "primarily off" is a config choice.
+        # idle_s=0 (default) keeps the continuous stream.
+        idle_s = float(self._config.get("idle_s") or 0.0)
+        burst_s = float(self._config.get("burst_s")
+                        or (0.5 if idle_s > 0 else 0.0))
+        count = 0
+        while True:
+            deadline = (time.monotonic() + burst_s
+                        if idle_s > 0 and burst_s > 0 else None)
+            for sample in self._stream_burst(deadline):
+                yield sample
+                count += 1
+                if max_samples is not None and count >= max_samples:
+                    return
+            # The burst ended (deadline) or the camera died — either way
+            # the device is already released. Continuous mode's inner
+            # loop is infinite; reaching this line there means an error.
+            if idle_s <= 0:
+                return
+            time.sleep(idle_s)
+
+    def _stream_burst(self, deadline: Optional[float] = None
+                      ) -> Iterator[SensorSample]:
+        """One open→read→close cycle — frames until ``deadline`` (or
+        forever when None). The device is always released on exit."""
         self._open()
         cap = self._cap
         assert cap is not None
@@ -115,9 +142,10 @@ class _CameraHandle(SensorHandle):
                     or cap.get(cv2.CAP_PROP_FPS) or 30.0)
         period = 1.0 / fps if fps > 0 else 0.0
         quality = int(self._config.get("jpeg_quality") or 80)
-        count = 0
         try:
             while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
                 with self._lock:
                     ok, frame = cap.read()
                 if not ok or frame is None:
@@ -145,14 +173,11 @@ class _CameraHandle(SensorHandle):
                     metadata={"adapter": self._desc.adapter,
                               "hardware_id": self._desc.hardware_id},
                 )
-                count += 1
-                if max_samples is not None and count >= max_samples:
-                    return
                 if period:
                     time.sleep(period)
         finally:
             # Release the sensor so the camera's privacy LED turns off the
-            # moment nobody is streaming — and re-opens on the next tail.
+            # moment the burst ends — and re-opens on the next burst.
             self.close()
 
     def latest(self) -> Optional[SensorSample]:
@@ -192,6 +217,14 @@ class OpenCvCameraAdapter(SensorAdapter):
                     "height": {"type": "integer"},
                     "fps": {"type": "number"},
                     "jpeg_quality": {"type": "integer"},
+                    # Duty cycling — privacy LED ON only during bursts:
+                    "idle_s": {"type": "number",
+                               "description": "seconds closed between "
+                                              "bursts; 0 = continuous"},
+                    "burst_s": {"type": "number",
+                                "description": "seconds open per burst "
+                                               "(default 0.5 when idle_s "
+                                               "is set)"},
                 },
             },
             maintainer="thothcraft",
