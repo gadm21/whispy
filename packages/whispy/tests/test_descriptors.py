@@ -64,3 +64,47 @@ def test_descriptors_are_json_safe_and_reject_bad_detail():
 
 def test_empty_samples():
     assert sensor_descriptor([]) == {"type": None, "n": 0}
+
+
+def test_feature_metadata_promoted_to_fields():
+    """Radar/CSI drivers put PCA/FFT/doppler features in sample
+    metadata — they must surface as descriptor fields, not be dropped."""
+    s = [_s("csi-1", "wifi_csi", 100 + i * 0.1, {"amp": 20.0 + i},
+            seq=i, pca1_ratio=0.4 + i * 0.01, fft_low_db=-30.0 - i,
+            doppler_hz=1.2, internal_state="x" * 4)
+         for i in range(6)]
+    d = sensor_descriptor(s, now=100.6)
+    f = d["fields"]
+    assert f["pca1_ratio"]["mean"] == pytest.approx(0.425)
+    assert f["fft_low_db"]["min"] == pytest.approx(-35.0)
+    assert f["doppler_hz"]["mean"] == pytest.approx(1.2)
+    assert "internal_state" not in f
+
+
+def test_vector_payload_emits_mean_and_std():
+    """A per-subcarrier CSI array must keep its spread — mean alone is
+    invisible to occupancy judgements."""
+    s = [_s("csi-1", "wifi_csi", 100 + i * 0.1,
+            {"subcarriers": [float(i), float(i + 1), float(i + 5)]},
+            seq=i) for i in range(3)]
+    d = sensor_descriptor(s, now=100.3)
+    f = d["fields"]
+    assert "subcarriers_mean" in f and "subcarriers_std" in f
+    # per-sample std of [i, i+1, i+5] ≈ 2.16 — present and non-zero
+    assert f["subcarriers_std"]["mean"] > 1.0
+
+
+def test_field_cap_keeps_radar_feature_sets():
+    """Rich radar payloads (snr + map stats + pca/fft features) must not
+    be silently truncated at the old 12-field cap."""
+    payload = {f"f{i}": float(i) for i in range(10)}
+    payload.update({"pca1": 0.9, "pca2": 0.05, "fft_band_a": -20.0,
+                    "fft_band_b": -25.0, "doppler_rms": 0.8,
+                    "range_max_m": 3.2, "snr_db": 9.1})
+    s = [_s("radar-1", "radar", 100.0 + i * 0.1, payload, seq=i)
+         for i in range(5)]
+    d = sensor_descriptor(s, now=100.5)
+    f = d["fields"]
+    for key in ("pca1", "pca2", "fft_band_a", "fft_band_b",
+                "doppler_rms", "range_max_m"):
+        assert key in f

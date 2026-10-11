@@ -14,6 +14,13 @@ Detail levels:
 * ``minimal``      — type, n, rate, age only.
 * ``descriptors``  — + numeric field statistics (default).
 * ``full``         — + radio scan summaries (top emitters, beacons).
+
+Field coverage is deliberately wide: radar/CSI drivers carry the
+occupancy signal in PCA components, FFT band energies, doppler bins and
+subcarrier spreads — anything named like a physical feature is kept
+(sample metadata included) up to ``MAX_FIELDS``; array payloads emit
+both ``<k>_mean`` and ``<k>_std`` so a per-subcarrier/vector spread
+survives the mean-collapse.
 """
 
 from __future__ import annotations
@@ -25,11 +32,30 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from .contracts import SensorSample, SensorWindow
 
 DETAIL_LEVELS = ("minimal", "descriptors", "full")
-MAX_FIELDS = 12
+MAX_FIELDS = 24
 MAX_VECTOR = 4096
 MAX_EMITTERS = 8
 
 _SCAN_TYPES = {"ble_scan", "wifi_scan"}
+
+# Numeric sample ``metadata`` keys worth promoting to fields — classic
+# stats plus the feature names radar/CSI extractors use (PCA loadings,
+# FFT bands, doppler, range, amplitude/phase aggregates, energy).
+_META_FIELD_KEYS = {
+    "snr_db", "rssi", "snr_f", "level_db", "confidence", "temperature",
+    "amplitude_var", "phase_var", "doppler", "doppler_hz", "range_m",
+    "energy", "entropy",
+}
+_META_FIELD_TOKENS = ("pca", "fft", "var", "doppler", "csi", "amplitude",
+                      "phase", "subcarrier", "range", "snr", "energy",
+                      "spectral", "eigen")
+
+
+def _is_field_metadata(key: Any) -> bool:
+    k = str(key).lower()
+    if k in _META_FIELD_KEYS:
+        return True
+    return any(tok in k for tok in _META_FIELD_TOKENS)
 
 
 def _stats(xs: List[float]) -> Dict[str, float]:
@@ -87,6 +113,12 @@ def _fields(samples: Iterable[SensorSample]) -> Dict[str, List[float]]:
                     if vals:
                         fields.setdefault(f"{k}_mean", []).append(
                             sum(vals) / len(vals))
+                        if len(vals) > 1:
+                            m = sum(vals) / len(vals)
+                            fields.setdefault(f"{k}_std", []).append(
+                                math.sqrt(
+                                    sum((x - m) ** 2 for x in vals)
+                                    / len(vals)))
         elif isinstance(p, (list, tuple)):
             vals = []
             _flatten_numbers(p, vals)
@@ -102,8 +134,7 @@ def _fields(samples: Iterable[SensorSample]) -> Dict[str, List[float]]:
                 fields.setdefault("value", []).append(f)
         for k, v in (s.metadata or {}).items():
             f = _numeric(v)
-            if f is not None and k in ("snr_db", "rssi", "snr_f", "level_db",
-                                       "confidence", "temperature"):
+            if f is not None and _is_field_metadata(k):
                 fields.setdefault(str(k), []).append(f)
     return fields
 
