@@ -25,6 +25,7 @@
   - [v1 API](brain/README.md)
   - [LLM context inference](brain/context-infer.md)
   - [LLM prompts & responses](brain/llm-prompts.md)
+  - [Chat agent assembly](brain/chat-agent.md)
 - **Portal**
   - [thothHUB](hub.md)
   - [Authentication](portal/AUTHENTICATION.md)

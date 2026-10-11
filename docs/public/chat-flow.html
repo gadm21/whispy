@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<!-- Interactive illustration of the /v1/chat assembly pipeline.
+     Self-contained (no deps) — embedded as an iframe by brain/chat-agent.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 14px; background: #f8fafc; color: #0f172a;
+         font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase;
+       letter-spacing: .06em; color: #64748b; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+              margin-bottom: 10px; }
+  .controls label { font-size: 12px; color: #334155; }
+  select, input[type=number] { font: inherit; padding: 3px 6px;
+    border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; }
+  .stages { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .stage { cursor: pointer; border: 1px solid #cbd5e1; border-radius: 8px;
+           background: #fff; padding: 6px 10px; font-size: 12px; }
+  .stage.sel { background: #0891b2; border-color: #0891b2; color: #fff; }
+  .stage:hover { border-color: #0891b2; }
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+           padding: 10px; min-height: 120px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word;
+        font: 11px/1.5 ui-monospace, Consolas, monospace; }
+  .msg { border-radius: 8px; padding: 7px 9px; margin-bottom: 6px;
+         border-left: 4px solid; }
+  .msg b { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+           display: block; margin-bottom: 3px; opacity: .75; }
+  .system    { background: #f1f5f9; border-color: #64748b; }
+  .ctx       { background: #ecfeff; border-color: #0891b2; }
+  .assist    { background: #f0fdf4; border-color: #22c55e; }
+  .hist      { background: #fefce8; border-color: #eab308; }
+  .user      { background: #eff6ff; border-color: #3b82f6; }
+  .dim       { color: #94a3b8; }
+  .pill { display: inline-block; background: #0891b2; color: #fff;
+          border-radius: 999px; padding: 0 8px; font-size: 11px; margin-left: 6px; }
+  .note { font-size: 11px; color: #64748b; margin-top: 8px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h3>POST /v1/chat — assembly playground</h3>
+<div class="controls">
+  <label>model pick
+    <select id="pick">
+      <option value="4">4 (gpt-4o)</option>
+      <option value="5">5 (gpt-4.1)</option>
+      <option value="6">6 (gpt-5)</option>
+      <option value="standard">standard (legacy)</option>
+      <option value="advanced">advanced (legacy)</option>
+    </select></label>
+  <label><input type="checkbox" id="ctx" checked> include_context</label>
+  <label>history turns <input type="number" id="hist" value="3" min="0" max="30" style="width:52px"></label>
+  <label>attachments <input type="number" id="att" value="1" min="0" max="8" style="width:52px"></label>
+</div>
+
+<div class="stages" id="stages"></div>
+<div class="layout">
+  <div class="panel"><h3 id="lt">Stage output</h3><pre id="left"></pre></div>
+  <div class="panel"><h3>Assembled <code>messages[]</code> sent to OpenAI</h3><div id="msgs"></div>
+    <div class="note" id="meta"></div></div>
+</div>
+
+<script>
+const STAGES = [
+  {id: "validate", label: "1 · validate"},
+  {id: "context",  label: "2 · context bundle"},
+  {id: "attach",   label: "3 · attachments"},
+  {id: "messages", label: "4 · messages[]"},
+  {id: "call",     label: "5 · OpenAI call"},
+  {id: "parse",    label: "6 · parse"},
+  {id: "respond",  label: "7 · response"},
+];
+const MODELS = {"4": "gpt-4o", "5": "gpt-4.1", "6": "gpt-5",
+                "standard": "gpt-4o-mini", "advanced": "gpt-4o"};
+const WIDE = new Set(["advanced", "5", "6"]);
+
+let sel = "context";
+const $ = id => document.getElementById(id);
+const pick = () => $("pick").value;
+const wide = () => WIDE.has(pick());
+const BUDGET = () => wide() ? 120000 : 60000;
+
+const stageBar = $("stages");
+for (const s of STAGES) {
+  const d = document.createElement("div");
+  d.className = "stage" + (s.id === sel ? " sel" : "");
+  d.textContent = s.label;
+  d.onclick = () => { sel = s.id; render(); };
+  d.dataset.id = s.id;
+  stageBar.appendChild(d);
+}
+["pick","ctx","hist","att"].forEach(id => $(id).onchange = render);
+
+const ctxBundle = () => ({
+  generated_at: "epoch", window_s: 900,
+  map: {entities: "…", relationships: "…", states: "…"},
+  devices:   `bundle devices[:${wide() ? 30 : 12}] — registry + fingerprints`,
+  descriptors:`bundle descriptors[:${wide() ? 32 : 12}] — per-key aggregates`,
+  scenes:    `bundle scenes[:${wide() ? 10 : 5}] — latest uplink per node`,
+  reference: "radar/CSI empty-vs-occupied stats",
+  builder: wide() ? "{builds,last_build_at,last_summary,pending,last_proposal}"
+                  : "{builds,last_build_at,last_summary,pending}",
+  usage: "inference quota {used, limit}",
+});
+
+function stageOutput() {
+  const nAtt = +$("att").value, nHist = +$("hist").value;
+  switch (sel) {
+    case "validate": return JSON.stringify({
+      tier: pick(),
+      checks: [
+        `tier ∈ ${JSON.stringify(["standard","advanced","4","5","6"])} else 422`,
+        `attachments ≤ 5  (you set ${nAtt} → kept ${Math.min(nAtt,5)}, rest dropped)`,
+        `history[-12:] kept, each ≤ 2000 chars (you set ${nHist} → kept ${Math.min(nHist,12)})`,
+        "message or ≥1 attachment required else 422",
+        "scope chat:write · metered as chat_query"],
+    }, null, 1);
+    case "context": return JSON.stringify(ctxBundle(), null, 1);
+    case "attach": return JSON.stringify(
+      Array.from({length: Math.min(nAtt,5)}, (_,i) =>
+        i === 0
+          ? {"image/png": "→ content part {type:image_url, image_url:{url:'data:image/png;base64,…'}} — ≤ 8 MB else 413"}
+          : {"file.txt": "→ content part {type:text, text:\"[attached file 'file.txt']\\n…≤16 000 chars\"}"}), null, 1)
+      .replace(/^\[\n|\n\]$/g, "").trim();
+    case "messages": return "see right →";
+    case "call": return JSON.stringify({
+      model: MODELS[pick()],
+      temperature: "0.3 — dropped on BadRequestError (reasoning models)",
+      response_format: "{type: json_object} — dropped on second 400",
+      metering: "inference_call(kind='chat_query') → usage {model_id, tokens}",
+    }, null, 1);
+    case "parse": return JSON.stringify({
+      raw: "resp.choices[0].message.content",
+      rules: [
+        "json.loads → dict? else {answer: raw, widgets: []}",
+        "answer missing/blank → raw or '(empty reply)'",
+        "widgets filtered to dicts only",
+      ],
+      example: {answer: "**Occupied** — radar SNR spikes 23 dB.",
+                widgets: [{type:"states", items:[{key:"occupancy.v1", entity:"place:home-living", value:"occupied", confidence:.85}]}]},
+    }, null, 1);
+    case "respond": return JSON.stringify({
+      answer: "<markdown>",
+      widgets: "[list|key_values|table|states|questions]",
+      context_used: "the exact bundle the model saw (or null)",
+      attachments: "receipt notes e.g. ['image:photo.png','pdf:doc.pdf']",
+      model: {tier: pick(), id: MODELS[pick()]},
+      generated_at: "epoch",
+    }, null, 1);
+  }
+}
+
+function messagesHtml() {
+  const nHist = Math.min(+$("hist").value, 12);
+  const nAtt = Math.min(+$("att").value, 5);
+  const blocks = [];
+  const mk = (cls, role, body) =>
+    `<div class="msg ${cls}"><b>${role}</b>${body}</div>`;
+  blocks.push(mk("system", "system",
+    "Thothcraft assistant — answer ONLY from the bundle + attachments + " +
+    "conversation; confirmed facts win; JSON {answer, widgets[]} only."));
+  if ($("ctx").checked) {
+    blocks.push(mk("ctx", "user",
+      `[context bundle]\\n&lt;json — capped at ${BUDGET().toLocaleString()} chars
+       <span class="pill">${wide() ? "wide" : "standard"}</span>&gt;`));
+    blocks.push(mk("assist", "assistant",
+      "\"Understood — I will answer only from that bundle plus what you send.\""));
+  }
+  for (let i = 0; i < nHist; i++)
+    blocks.push(mk("hist", i % 2 ? "assistant" : "user",
+      `history[${i}] — role + content ≤ 2000 chars`));
+  const parts = [];
+  parts.push("{type:text, text:'&lt;user message&gt;'}");
+  for (let i = 0; i < nAtt; i++)
+    parts.push(i === 0 ? "{type:image_url, …}" : "{type:text, '[attached file…]'}");
+  blocks.push(mk("user", "user",
+    parts.length === 1 ? "plain string: the message text"
+                       : "content parts: [ " + parts.join(", ") + " ]"));
+  return blocks.join("");
+}
+
+function render() {
+  for (const d of stageBar.children)
+    d.classList.toggle("sel", d.dataset.id === sel);
+  $("left").textContent = stageOutput();
+  $("msgs").innerHTML = messagesHtml();
+  $("meta").textContent =
+    `→ model=${MODELS[pick()]} · json_mode + temperature 0.3 ` +
+    `(degraded on 400) · context ${$("ctx").checked ? "included" : "omitted"}`;
+}
+render();
+</script>
+</body>
+</html>
