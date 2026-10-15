@@ -72,7 +72,18 @@ def _configured_sources() -> List[Dict[str, Any]]:
 
 def _serial_candidates() -> List[str]:
     """Stable USB-serial device paths (auto-detect scope)."""
-    return sorted(glob.glob(_SERIAL_GLOB))
+    ports = sorted(glob.glob(_SERIAL_GLOB))
+    if ports:
+        return ports
+    # Windows (no /dev/serial): enumerate hardware COM ports — the
+    # probe below still gates on CSI-protocol lines, so non-ESP ports
+    # (Bluetooth SPP excluded) simply fail the probe.
+    try:
+        from serial.tools import list_ports as _lp
+        return sorted(p.device for p in _lp.comports()
+                      if p.device and "BTHENUM" not in (p.hwid or ""))
+    except Exception:
+        return []
 
 
 def _serial_module():
@@ -128,6 +139,11 @@ def _unquote(field: str) -> str:
     return field.strip().strip('"').strip()
 
 
+def received_at_hint() -> float:
+    """Timestamp for handle-cached state (self/net lines)."""
+    return time.time()
+
+
 def _parse_csi_payload(text: str) -> Optional[Dict[str, Any]]:
     """Parse the body of a ``CSI_DATA`` line: stable positional fields
     (seq, mac, rssi) + trailing quoted ``[i,q,...]`` array."""
@@ -179,7 +195,9 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
     - ``CSI_DATA,seq,mac,rssi,...,"[i,q,...]"``
     - ``WIFI_DATA,ms,mac,kind,rssi,ch,"ssid"``   promiscuous 802.11 frames
     - ``BLE_DATA,ms,addr,addr_type,rssi,txp,"name","mfg_hex"``
-    - ``SELF_DATA,role,mac,"name","owner"``
+    - ``SELF_DATA,role,mac,"name","owner","ssid","ip"``
+      (ssid/ip were added with the wifi provisioning chain; older
+      firmware emits only the first five fields — both parse.)
     """
     try:
         text = line.decode("ascii", errors="ignore").strip()
@@ -267,10 +285,14 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
         parts = next(csv.reader([text]))
         if len(parts) < 3:
             return None
+        ssid = _unquote(parts[5]) if len(parts) > 5 else None
+        ip = _unquote(parts[6]) if len(parts) > 6 else None
         return {"type": "self", "data": {
             "role": parts[1], "mac": parts[2],
             "name": _unquote(parts[3]) if len(parts) > 3 else None,
-            "owner": _unquote(parts[4]) if len(parts) > 4 else None}}
+            "owner": _unquote(parts[4]) if len(parts) > 4 else None,
+            "ssid": None if ssid in (None, "-") else ssid,
+            "ip": None if ip in (None, "-") else ip}}
 
     if text.startswith("NET_DATA,"):
         # NET_DATA,ip,hostname,port,channel — board joined an AP
@@ -297,6 +319,25 @@ class _SerialCsiHandle(SensorHandle):
         self._config = dict(config or {})
         self._seq = itertools.count()
         self._ser = None
+        self.last_self: Optional[Dict[str, Any]] = None
+        self.last_net: Optional[Dict[str, Any]] = None
+
+    def board_state(self) -> Dict[str, Any]:
+        """Best-effort view of the board's reported identity + Wi-Fi
+        state for the provisioning chain (esp32 -> node -> app)."""
+        out: Dict[str, Any] = {
+            "sensor_id": self._desc.id,
+            "serial_port": (self._config.get("serial_port")
+                            or self._desc.metadata.get("serial_port")),
+            "open": self._ser is not None,
+        }
+        out.update(self.last_self or {})
+        if self.last_net:
+            out["ip"] = out.get("ip") or self.last_net.get("ip")
+            out["hostname"] = self.last_net.get("hostname")
+            out["channel"] = self.last_net.get("channel")
+        out["connected"] = bool(out.get("ip"))
+        return out
 
     @property
     def info(self):
@@ -360,6 +401,12 @@ class _SerialCsiHandle(SensorHandle):
                     if parsed is None:
                         continue
                     ptype, data = parsed["type"], parsed["data"]
+                    if ptype == "self":
+                        self.last_self = {**data,
+                                          "_ts": received_at_hint()}
+                    elif ptype == "net":
+                        self.last_net = {**data,
+                                         "_ts": received_at_hint()}
                     if ptype == "csi_raw":
                         iq = data.pop("iq")
                         iq_bytes = bytes(
@@ -496,6 +543,12 @@ class CsiSensorAdapter(SensorAdapter):
 
     def health(self) -> HealthReport:
         return HealthReport(status="ok")
+
+    def ports_state(self) -> List[Dict[str, Any]]:
+        """Per-board identity + Wi-Fi state as last reported on the
+        serial line (SELF_DATA / NET_DATA). Drives the node's
+        /api/v1/esp32 surface for the provisioning chain."""
+        return [h.board_state() for h in self._handles]
 
     def close(self) -> None:
         for handle in self._handles:

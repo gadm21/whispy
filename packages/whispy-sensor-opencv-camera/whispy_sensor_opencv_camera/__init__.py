@@ -117,9 +117,11 @@ class _CameraHandle(SensorHandle):
                         or (0.5 if idle_s > 0 else 0.0))
         count = 0
         while True:
-            deadline = (time.monotonic() + burst_s
-                        if idle_s > 0 and burst_s > 0 else None)
-            for sample in self._stream_burst(deadline):
+            # Pass burst_s, not an absolute deadline — _stream_burst starts
+            # the clock only after _open() returns; DirectShow opens can
+            # take ~1s, which would otherwise eat the whole burst window.
+            for sample in self._stream_burst(
+                    burst_s if idle_s > 0 and burst_s > 0 else None):
                 yield sample
                 count += 1
                 if max_samples is not None and count >= max_samples:
@@ -131,13 +133,15 @@ class _CameraHandle(SensorHandle):
                 return
             time.sleep(idle_s)
 
-    def _stream_burst(self, deadline: Optional[float] = None
+    def _stream_burst(self, burst_s: Optional[float] = None
                       ) -> Iterator[SensorSample]:
-        """One open→read→close cycle — frames until ``deadline`` (or
-        forever when None). The device is always released on exit."""
+        """One open→read→close cycle — ``burst_s`` seconds of streaming
+        (or forever when None). The device is always released on exit."""
         self._open()
         cap = self._cap
         assert cap is not None
+        deadline = (time.monotonic() + float(burst_s)
+                    if burst_s else None)
         fps = float(self._config.get("fps")
                     or cap.get(cv2.CAP_PROP_FPS) or 30.0)
         period = 1.0 / fps if fps > 0 else 0.0
