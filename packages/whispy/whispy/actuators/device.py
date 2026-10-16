@@ -10,6 +10,7 @@ hardware").
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
 import subprocess
 from typing import Any, Callable, Dict, Optional
@@ -122,7 +123,9 @@ class DeviceActuator(Actuator):
         try:
             proc = subprocess.run(
                 command, shell=isinstance(command, str),
-                capture_output=True, text=True, timeout=timeout)
+                capture_output=True, text=True, timeout=timeout,
+                creationflags=(subprocess.CREATE_NO_WINDOW
+                               if platform.system() == "Windows" else 0))
             ok = proc.returncode == 0
             return ActionResult(
                 status=ActionStatus.SUCCEEDED if ok else ActionStatus.FAILED,

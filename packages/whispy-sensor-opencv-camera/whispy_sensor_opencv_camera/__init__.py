@@ -46,7 +46,8 @@ def _windows_camera_devices() -> List[Dict[str, str]]:
              "Get-PnpDevice -Class CAMERA -Status OK -ErrorAction "
              "SilentlyContinue | Select-Object FriendlyName,InstanceId | "
              "ConvertTo-Json"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW)
         import json
         data = json.loads(out.stdout or "[]")
         if isinstance(data, dict):

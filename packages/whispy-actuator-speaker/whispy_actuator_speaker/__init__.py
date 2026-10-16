@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 _IS_WINDOWS = platform.system() == "Windows"
 _IS_LINUX = platform.system() == "Linux"
 
+# Without CREATE_NO_WINDOW each console subprocess spawned from a
+# windowless daemon (pythonw) flashes a fresh console window.
+_NO_WINDOW = (subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0)
+
 
 def _pyttsx3_engine():
     try:
@@ -89,7 +93,8 @@ class _SpeakerHandle(ActuatorHandle):
         try:
             proc = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", script],
-                capture_output=True, text=True, timeout=120)
+                capture_output=True, text=True, timeout=120,
+                creationflags=_NO_WINDOW)
             ok = proc.returncode == 0
             return ActionResult(
                 status=ActionStatus.SUCCEEDED if ok else ActionStatus.FAILED,
@@ -131,7 +136,7 @@ class _SpeakerHandle(ActuatorHandle):
                                 detail="no TTS backend (espeak/pyttsx3)")
         try:
             proc = subprocess.run([exe, text], capture_output=True,
-                                  timeout=120)
+                                  timeout=120, creationflags=_NO_WINDOW)
             ok = proc.returncode == 0
             return ActionResult(
                 status=ActionStatus.SUCCEEDED if ok else ActionStatus.FAILED,
@@ -226,7 +231,8 @@ class _SpeakerHandle(ActuatorHandle):
             args = [exe]
             if exe.endswith("aplay"):
                 args += ["-f", "S16_LE", "-r", str(rate), "-c", "1"]
-            proc = subprocess.Popen(args, stdin=subprocess.PIPE)
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE,
+                                    creationflags=_NO_WINDOW)
             proc.communicate(pcm, timeout=120)
             ok = proc.returncode == 0
             return ActionResult(

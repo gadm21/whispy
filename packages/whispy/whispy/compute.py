@@ -60,7 +60,9 @@ def _gpus() -> List[Dict[str, Any]]:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=5,
+            creationflags=(subprocess.CREATE_NO_WINDOW
+                           if platform.system() == "Windows" else 0))
         if out.returncode == 0:
             for line in out.stdout.strip().splitlines():
                 name, _, mem = line.partition(",")

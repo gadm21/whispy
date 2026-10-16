@@ -46,8 +46,11 @@ _IS_WIN = platform.system() == "Windows"
 
 def _run(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
     try:
+        # CREATE_NO_WINDOW: without it each console subprocess launched from
+        # a windowless daemon (pythonw) flashes a fresh console window.
+        flags = subprocess.CREATE_NO_WINDOW if _IS_WIN else 0
         out = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                             check=False)
+                             check=False, creationflags=flags)
         return out.stdout.decode("utf-8", errors="replace")
     except Exception as exc:                       # noqa: BLE001
         log.debug("%s failed: %s", cmd, exc)
