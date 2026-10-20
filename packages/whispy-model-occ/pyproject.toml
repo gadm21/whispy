@@ -17,6 +17,7 @@ dependencies = [
 
 [project.entry-points."whispy.models"]
 occ-rf-moe = "whispy_model_occ:OccMoeModel"
+occ-rf-hier = "whispy_model_occ.hier:OccHierModel"
 
 [tool.setuptools.packages.find]
 include = ["whispy_model_occ*"]

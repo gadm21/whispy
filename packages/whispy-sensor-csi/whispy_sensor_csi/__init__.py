@@ -506,11 +506,14 @@ class CsiSensorAdapter(SensorAdapter):
             for port in _serial_candidates():
                 name = os.path.basename(port)
                 if _probe_serial(port):
+                    # by-id paths embed the USB id after the first "_";
+                    # bare port names (COM10, ttyACM0) don't.
+                    tag = (name.split("_")[1] if "_" in name else name)
                     sources.append({
                         "type": "serial", "id": f"serial:{name}",
-                        "name": f"ESP32 CSI ({name.split('_')[1]}"
-                                f" serial)",
-                        "serial_port": os.path.realpath(port),
+                        "name": f"ESP32 CSI ({tag} serial)",
+                        "serial_port": (port if os.name == "nt"
+                                        else os.path.realpath(port)),
                         "baud": _DEFAULT_BAUD})
         out: List[SensorDescriptor] = []
         for src in sources:
