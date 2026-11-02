@@ -29,6 +29,8 @@ import itertools
 import json
 import logging
 import os
+import socket
+import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -67,6 +69,11 @@ def _configured_sources() -> List[Dict[str, Any]]:
                 baud = int(b)
             out.append({"type": "serial", "id": f"serial:{port}",
                         "serial_port": port, "baud": baud})
+        elif item.startswith("tcp:"):
+            hostport = item[len("tcp:"):]
+            host, _, p = hostport.rpartition(":")
+            out.append({"type": "tcp", "id": f"tcp:{hostport}",
+                        "host": host, "port": int(p or 5003)})
     return out
 
 
@@ -310,6 +317,211 @@ def _parse_line(line: bytes) -> Optional[Dict[str, Any]]:
     return None
 
 
+class _TcpListener:
+    """Accepts board-initiated pushes (`sink=<ip>,<port>` on the board).
+    One shared listener per port; pending sockets are drained into
+    ``_TcpCsiHandle``s at discovery time."""
+
+    _by_port: Dict[int, "_TcpListener"] = {}
+    _lock = threading.Lock()
+
+    def __init__(self, port: int):
+        self.port = port
+        self.pending: List[tuple] = []        # (socket, addr)
+        self._plock = threading.Lock()
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("0.0.0.0", port))
+        self._sock.listen(8)
+        self._dead = False
+        threading.Thread(target=self._accept_loop, daemon=True,
+                         name=f"csi-tcp-{port}").start()
+
+    @classmethod
+    def get(cls, port: int) -> "_TcpListener":
+        with cls._lock:
+            if port not in cls._by_port or cls._by_port[port]._dead:
+                cls._by_port[port] = cls(port)
+            return cls._by_port[port]
+
+    def _accept_loop(self) -> None:
+        while True:
+            try:
+                conn, addr = self._sock.accept()
+            except OSError:
+                return
+            try:
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                conn.settimeout(0.5)
+            except OSError:
+                pass
+            with self._plock:
+                self.pending.append((conn, addr))
+
+    def take(self) -> List[tuple]:
+        with self._plock:
+            out, self.pending = self.pending, []
+        return out
+
+    def close(self) -> None:
+        self._dead = True
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def _emit_sample(desc: SensorDescriptor, config: Dict[str, Any],
+                 seq, ptype: str, data: Dict[str, Any],
+                 received_at: float) -> Optional[SensorSample]:
+    """One parsed console line → SensorSample (shared serial/TCP)."""
+    if ptype == "csi_raw":
+        iq = data.pop("iq")
+        iq_bytes = bytes((v & 0xFF) for v in iq)   # int8 pairs
+        payload = {
+            "encoding": "csi_raw",
+            "data": base64.b64encode(iq_bytes).decode("ascii"),
+            "bytes": len(iq_bytes),
+            "n_subcarriers": len(iq) // 2,
+            "iq": iq,
+            "source": "serial",
+            **data,
+        }
+    else:
+        payload = {"source": "serial", **data}
+        if ptype == "ble_scan":
+            beacon = decode_beacon(data)
+            if beacon is not None:
+                payload["beacon"] = beacon
+    observation = normalize_observation(
+        ptype, payload, {**desc.metadata, **config},
+        component_id=desc.hardware_id,
+        received_at=received_at,
+    )
+    payload["observation"] = observation
+    return SensorSample(
+        device_id="",
+        sensor_id=desc.id,
+        sensor_type=observation["sensor_type"],
+        timestamp=received_at,
+        sequence=next(seq),
+        payload_type=ptype,
+        payload=payload,
+        metadata={"adapter": "csi",
+                  "hardware_id": desc.hardware_id,
+                  "component_id": observation["component_id"],
+                  "stream": observation["stream"]},
+    )
+
+
+class _TcpCsiHandle(SensorHandle):
+    """Streams console lines from a board-pushed TCP connection."""
+
+    def __init__(self, descriptor: SensorDescriptor,
+                 config: Optional[Dict[str, Any]] = None,
+                 conn=None, host: Optional[str] = None,
+                 port: Optional[int] = None):
+        self._desc = descriptor
+        self._config = dict(config or {})
+        self._seq = itertools.count()
+        self._sock = conn
+        self._host = host
+        self._port = port
+        self.last_self: Optional[Dict[str, Any]] = None
+        self.last_net: Optional[Dict[str, Any]] = None
+
+    def board_state(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "sensor_id": self._desc.id,
+            "open": self._sock is not None,
+            "transport": "tcp",
+            "peer": self._desc.metadata.get("peer"),
+        }
+        out.update(self.last_self or {})
+        if self.last_net:
+            out["ip"] = out.get("ip") or self.last_net.get("ip")
+            out["hostname"] = self.last_net.get("hostname")
+            out["channel"] = self.last_net.get("channel")
+        out["connected"] = bool(out.get("ip"))
+        return out
+
+    @property
+    def info(self):
+        return self._desc.to_sensor()
+
+    @property
+    def descriptor(self) -> SensorDescriptor:
+        return self._desc
+
+    def _open(self) -> None:
+        if self._sock is None:
+            if not self._host:
+                raise RuntimeError("tcp sink connection not available")
+            s = socket.create_connection((self._host, int(self._port or 5003)),
+                                         timeout=5)
+            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.settimeout(0.5)
+            self._sock = s
+
+    def stream(self, max_samples: Optional[int] = None
+               ) -> Iterator[SensorSample]:
+        self._open()
+        buf = b""
+        count = 0
+        try:
+            while True:
+                try:
+                    chunk = self._sock.recv(16384)
+                    if not chunk:
+                        return
+                    buf += chunk
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                while b"\n" in buf:
+                    line, _, buf = buf.partition(b"\n")
+                    parsed = _parse_line(line)
+                    if parsed is None:
+                        continue
+                    ptype, data = parsed["type"], parsed["data"]
+                    if ptype == "self":
+                        self.last_self = {**data,
+                                          "_ts": received_at_hint()}
+                    elif ptype == "net":
+                        self.last_net = {**data,
+                                         "_ts": received_at_hint()}
+                        continue
+                    if ptype not in ("csi_raw", "wifi_scan", "ble_scan",
+                                     "zigbee_scan", "self",
+                                     "radio_health"):
+                        continue
+                    sample = _emit_sample(self._desc, self._config,
+                                          self._seq, ptype, data,
+                                          time.time())
+                    if sample is None:
+                        continue
+                    yield sample
+                    count += 1
+                    if max_samples is not None and count >= max_samples:
+                        return
+        finally:
+            self.close()
+
+    def latest(self) -> Optional[SensorSample]:
+        for sample in self.stream(max_samples=1):
+            return sample
+        return None
+
+    def close(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+
 class _SerialCsiHandle(SensorHandle):
     """Streams ``CSI_DATA`` lines from an ESP32 serial port."""
 
@@ -479,7 +691,8 @@ class CsiSensorAdapter(SensorAdapter):
 
     def __init__(self, sources: Optional[List[Dict[str, Any]]] = None):
         self._sources = sources
-        self._handles: List[_SerialCsiHandle] = []
+        self._handles: List = []
+        self._tcp_conns: Dict[str, tuple] = {}   # hardware_id -> (sock, addr)
 
     def metadata(self) -> SensorMeta:
         return SensorMeta(
@@ -505,10 +718,14 @@ class CsiSensorAdapter(SensorAdapter):
         )
 
     def discover(self) -> List[SensorDescriptor]:
-        sources = [s for s in (self._sources if self._sources is not None
-                               else _configured_sources())
+        declared = (self._sources if self._sources is not None
+                    else _configured_sources())
+        sources = [s for s in declared
                    if s.get("serial_port") or s.get("type") == "serial"]
-        if not sources:
+        # Serial auto-probing opens each candidate port — on native-USB
+        # ESP32s that toggles DTR/RTS and reboots the board. Skip it
+        # entirely when the caller declared any non-serial source.
+        if not sources and not declared:
             for port in _serial_candidates():
                 name = os.path.basename(port)
                 if _probe_serial(port):
@@ -522,6 +739,66 @@ class CsiSensorAdapter(SensorAdapter):
                                         else os.path.realpath(port)),
                         "baud": _DEFAULT_BAUD})
         out: List[SensorDescriptor] = []
+        # tcp_listen sources: boards dial out (`sink=<ip>,<port>`) and
+        # push their console stream — used when the host's USB data
+        # path is dead. Each pending connection becomes a sensor.
+        for src in declared:
+            if src.get("type") != "tcp_listen":
+                continue
+            lport = int(src.get("port") or 5002)
+            listener = _TcpListener.get(lport)
+            wait_s = float(src.get("wait_s", 2.0))
+            deadline = time.time() + wait_s
+            while time.time() < deadline and not listener.pending:
+                time.sleep(0.1)
+            for conn, addr in listener.take():
+                hid = f"tcp:{addr[0]}"
+                self._tcp_conns[hid] = (conn, addr)
+                out.append(SensorDescriptor(
+                    id=SensorDescriptor.make_id("csi", hid),
+                    modality="wifi_csi",
+                    adapter="esp32_csi",
+                    name=f"ESP32 CSI ({addr[0]} push)",
+                    hardware_id=hid,
+                    capabilities=["csi_raw", "amplitude", "phase"],
+                    config_schema=self.metadata().config_schema,
+                    stable=True,
+                    metadata={
+                        "transport": "tcp", "peer": addr[0],
+                        "peer_port": addr[1],
+                        **{key: src[key] for key in (
+                            "node_id", "component_id",
+                            "direct_source_mac", "direct_source_component",
+                            "ap_bssid") if key in src},
+                    },
+                ))
+        # tcp sources: whispy dials the board's sink listener
+        # (`sink=1` on the board → console stream on :5003).
+        for src in declared:
+            if src.get("type") != "tcp":
+                continue
+            host = src.get("host") or src.get("ip")
+            port = int(src.get("port") or 5003)
+            if not host:
+                continue
+            hid = f"tcp:{host}:{port}"
+            out.append(SensorDescriptor(
+                id=SensorDescriptor.make_id("csi", hid),
+                modality="wifi_csi",
+                adapter="esp32_csi",
+                name=str(src.get("name") or f"ESP32 CSI ({host} net)"),
+                hardware_id=hid,
+                capabilities=["csi_raw", "amplitude", "phase"],
+                config_schema=self.metadata().config_schema,
+                stable=True,
+                metadata={
+                    "transport": "tcp", "host": host, "port": port,
+                    **{key: src[key] for key in (
+                        "node_id", "component_id",
+                        "direct_source_mac", "direct_source_component",
+                        "ap_bssid") if key in src},
+                },
+            ))
         for src in sources:
             sid = str(src.get("id") or src.get("serial_port"))
             out.append(SensorDescriptor(
@@ -546,7 +823,14 @@ class CsiSensorAdapter(SensorAdapter):
 
     def connect(self, descriptor: SensorDescriptor,
                 config: Optional[Dict[str, Any]] = None):
-        handle = _SerialCsiHandle(descriptor, config)
+        if descriptor.metadata.get("transport") == "tcp":
+            conn, _addr = self._tcp_conns.get(
+                descriptor.hardware_id, (None, None))
+            handle = _TcpCsiHandle(descriptor, config, conn=conn,
+                                   host=descriptor.metadata.get("host"),
+                                   port=descriptor.metadata.get("port"))
+        else:
+            handle = _SerialCsiHandle(descriptor, config)
         self._handles.append(handle)
         return handle
 
