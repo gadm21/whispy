@@ -12,3 +12,4 @@ venv/
 
 *.deb
 .pytest_cache/
+out.txt

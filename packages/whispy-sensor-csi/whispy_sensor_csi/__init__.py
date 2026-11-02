@@ -407,6 +407,12 @@ class _SerialCsiHandle(SensorHandle):
                     elif ptype == "net":
                         self.last_net = {**data,
                                          "_ts": received_at_hint()}
+                        continue
+                    if ptype not in ("csi_raw", "wifi_scan", "ble_scan",
+                                     "zigbee_scan", "self",
+                                     "radio_health"):
+                        # console/status lines (ping=, wifi=, NET, …)
+                        continue
                     if ptype == "csi_raw":
                         iq = data.pop("iq")
                         iq_bytes = bytes(
